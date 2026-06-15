@@ -876,10 +876,6 @@ function EventDetailsModal({ event, onClose, onEdit }: {
                 <div><label className="block text-sm font-medium text-slate-900 mb-1">{event.includeMatchDetails ? 'Kick-off' : 'Main Start'}</label><p className="text-slate-700 text-sm">{formatDateTime(event.kickoff_time)}</p></div>
                 {event.event_end_time && <div><label className="block text-sm font-medium text-slate-900 mb-1">Event End</label><p className="text-slate-700 text-sm">{formatDateTime(event.event_end_time)}</p></div>}
               </div>
-              <div className="grid grid-cols-2 gap-4 pt-4 border-t border-slate-100">
-                <div className="bg-slate-50 rounded-lg p-4"><p className="text-sm font-medium text-slate-900 mb-1">Current Viewers</p><p className="text-2xl font-bold text-slate-900">{event.currentViewers.toLocaleString()}</p></div>
-                <div className="bg-slate-50 rounded-lg p-4"><p className="text-sm font-medium text-slate-900 mb-1">Peak Viewers</p><p className="text-2xl font-bold text-slate-900">{event.peakViewers.toLocaleString()}</p></div>
-              </div>
               {event.vip_delivery?.enabled && (
                 <div className="pt-4 border-t border-slate-100">
                   <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
@@ -1000,7 +996,6 @@ function EventDetailsModal({ event, onClose, onEdit }: {
                             </div>
                             <div className="absolute top-4 left-4 flex items-center gap-2">
                               <span className="flex items-center gap-1.5 px-2.5 py-1 bg-red-600 text-white text-xs font-bold rounded shadow-lg"><span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" /> LIVE</span>
-                              <span className="px-2.5 py-1 bg-black/50 backdrop-blur text-white text-xs font-medium rounded">{event.currentViewers.toLocaleString()} viewers</span>
                             </div>
                           </div>
                         )}
@@ -1439,7 +1434,6 @@ export default function EventManager() {
                             {event.includeMatchDetails && event.homeTeam && event.awayTeam && <span className="flex items-center gap-1"><Users size={16} /> {event.homeTeam} vs {event.awayTeam}</span>}
                             {event.includeMatchDetails && event.venue && <span className="flex items-center gap-1"><MapPin size={16} /> {event.venue}</span>}
                             <span className="flex items-center gap-1"><Calendar size={16} /> {formatShortDate(event.kickoff_time)}</span>
-                            <span className="flex items-center gap-1"><Eye size={16} />{event.status === 'live' ? `${event.currentViewers.toLocaleString()} watching` : `${event.peakViewers.toLocaleString()} peak`}</span>
                           </div>
 
                           <div className="flex items-center gap-2 flex-wrap">
