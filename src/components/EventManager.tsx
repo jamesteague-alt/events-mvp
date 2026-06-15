@@ -1,8 +1,8 @@
 import React, { useState, useMemo, useId } from 'react';
 import {
-  Search, Filter, Radio, Video, Calendar, MapPin, Users, Eye, Edit2,
-  Trash2, Copy, Check, ChevronDown, X, Clock, Upload,
-  AlertCircle, Plus, Archive,
+  Search, Filter, Radio, Video, Calendar, MapPin, Users, Globe, Eye, Edit2,
+  Trash2, Copy, Check, ChevronDown, ChevronUp, X, Clock, Upload,
+  AlertCircle, Plus, Archive, Shield, CreditCard,
   Power, Square, Zap, Activity, Play, Volume2, VolumeX, Monitor,
   ChevronLeft, ChevronRight, Pause, Maximize2, Edit3,
   Crown, Mail, UserPlus, UserX, RefreshCw,
@@ -38,6 +38,19 @@ interface StreamTemplate {
   cdn_destination: string;
 }
 
+interface StreamRights {
+  geo_profile: string;
+  geo_countries: string[];
+  subscription_plans: string[];
+  segment_ids: string[];
+  combine_mode: 'AND' | 'OR';
+}
+
+interface SegmentDefinition {
+  id: string;
+  display_name: string;
+}
+
 interface StreamRow {
   id: string;
   title: string;
@@ -46,6 +59,7 @@ interface StreamRow {
   broadcast_id: string;
   stream_template_id: string;
   live2vod: boolean;
+  rights: StreamRights;
   expanded: boolean;
 }
 
@@ -125,6 +139,42 @@ const VENUES = [
 
 const COMPETITIONS = ['EFL Championship', 'FA Cup', 'EFL Cup', 'Friendly', 'Pre-Season', 'NWSL Regular Season'];
 
+const GEO_PROFILES = [
+  'Worldwide (No Restrictions)', 'Domestic Only', 'International Only',
+  'EFL Broadcast Territory', 'Europe Only', 'North America Only', 'Asia-Pacific', 'Custom',
+];
+
+const COUNTRIES = [
+  'United Kingdom', 'United States', 'Canada', 'Germany', 'France', 'Spain',
+  'Italy', 'Netherlands', 'Belgium', 'Sweden', 'Norway', 'Denmark',
+  'Australia', 'Japan', 'South Korea', 'India', 'China', 'Brazil',
+  'Argentina', 'Mexico', 'Ireland', 'Portugal', 'Poland', 'Switzerland',
+];
+
+const SUBSCRIPTION_PLANS = [
+  { id: 'plan_free',      name: 'Free Tier',                  description: 'No subscription required' },
+  { id: 'plan_monthly',   name: 'Monthly Pass (£9.99/mo)',    description: 'Rolling monthly subscription' },
+  { id: 'plan_annual',    name: 'Annual Pass (£99.99/yr)',    description: 'Best value annual subscription' },
+  { id: 'plan_matchday',  name: 'Match Day Pass (£4.99)',     description: 'Single event access' },
+  { id: 'plan_season',    name: 'Season Ticket Holder',       description: 'Complimentary with season ticket' },
+  { id: 'plan_premium',   name: 'Premium All-Access',         description: 'All live & VOD content' },
+];
+
+const SEGMENT_LIBRARY: SegmentDefinition[] = [
+  { id: 'seg_season_ticket',         display_name: 'Season Ticket Holders' },
+  { id: 'seg_members',               display_name: 'Members' },
+  { id: 'seg_family_pass',           display_name: 'Family Pass Holders' },
+  { id: 'seg_junior_members',        display_name: 'Junior Members' },
+  { id: 'seg_corporate_hospitality', display_name: 'Corporate Hospitality' },
+  { id: 'seg_media_accredited',      display_name: 'Media Accredited' },
+  { id: 'seg_intl_supporters',       display_name: 'International Supporters Club' },
+  { id: 'seg_internal_staff',        display_name: 'Internal Staff' },
+  { id: 'seg_lapsed_fans',           display_name: 'Lapsed Fans (re-engagement)' },
+  { id: 'seg_newsletter_optin',      display_name: 'Newsletter Subscribers' },
+  { id: 'seg_app_active_30d',        display_name: 'Active App Users (30d)' },
+  { id: 'seg_watched_last_match',    display_name: 'Watched Last Match' },
+];
+
 const INPUT_TYPE_COLORS: Record<InputType, string> = {
   RTMP_PUSH:    'bg-blue-100 text-blue-800',
   SRT_CALLER:   'bg-emerald-100 text-emerald-800',
@@ -190,6 +240,10 @@ const getMissingFields = (event: LiveEvent): string[] => {
   if (!event.event_end_time) missing.push('Event End Time');
   if (event.streams.length === 0) missing.push('Streams (none configured)');
   if (event.includeMatchDetails && !event.venue) missing.push('Venue');
+  const hasAnyRights = event.streams.some(
+    s => s.rights.geo_profile || s.rights.geo_countries.length > 0 || s.rights.subscription_plans.length > 0 || s.rights.segment_ids.length > 0
+  );
+  if (!hasAnyRights && event.streams.length > 0) missing.push('Rights restrictions');
   return missing;
 };
 
@@ -202,6 +256,7 @@ const createStreamRow = (overrides: Partial<StreamRow> = {}): StreamRow => ({
   broadcast_id: '',
   stream_template_id: '',
   live2vod: false,
+  rights: { geo_profile: '', geo_countries: [], subscription_plans: [], segment_ids: [], combine_mode: 'AND' },
   expanded: false,
   ...overrides,
 });
@@ -217,8 +272,8 @@ const initialEvents: LiveEvent[] = [
     event_start_time: '2026-01-26T18:30:00', kickoff_time: '2026-01-26T19:00:00', event_end_time: '2026-01-26T21:00:00',
     image_16x9: null, currentViewers: 12453, peakViewers: 15782,
     streams: [
-      { id: 'sr-001a', title: 'Main Broadcast', icon: 'video', thumbnail: null, broadcast_id: 'BC-001', stream_template_id: 'stream_video_1080', live2vod: true, expanded: false },
-      { id: 'sr-001b', title: 'Audio Commentary', icon: 'radio', thumbnail: null, broadcast_id: 'BC-002', stream_template_id: 'stream_audio_only', live2vod: false, expanded: false },
+      { id: 'sr-001a', title: 'Main Broadcast', icon: 'video', thumbnail: null, broadcast_id: 'BC-001', stream_template_id: 'stream_video_1080', live2vod: true, rights: { geo_profile: 'Domestic Only', geo_countries: [], subscription_plans: ['plan_season', 'plan_premium'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
+      { id: 'sr-001b', title: 'Audio Commentary', icon: 'radio', thumbnail: null, broadcast_id: 'BC-002', stream_template_id: 'stream_audio_only', live2vod: false, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_free'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
     ],
     vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_001', isDraft: false,
   },
@@ -230,7 +285,7 @@ const initialEvents: LiveEvent[] = [
     event_start_time: '2026-01-28T13:45:00', kickoff_time: '2026-01-28T14:00:00', event_end_time: '2026-01-28T15:30:00',
     image_16x9: null, currentViewers: 0, peakViewers: 0,
     streams: [
-      { id: 'sr-002a', title: 'Main Feed', icon: 'video', thumbnail: null, broadcast_id: 'BC-003', stream_template_id: 'stream_video_1080', live2vod: true, expanded: false },
+      { id: 'sr-002a', title: 'Main Feed', icon: 'video', thumbnail: null, broadcast_id: 'BC-003', stream_template_id: 'stream_video_1080', live2vod: true, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_free'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
     ],
     vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_002', isDraft: false,
   },
@@ -250,7 +305,7 @@ const initialEvents: LiveEvent[] = [
     event_start_time: '2026-01-25T15:45:00', kickoff_time: '2026-01-25T16:00:00', event_end_time: '2026-01-25T17:00:00',
     image_16x9: null, currentViewers: 0, peakViewers: 8432,
     streams: [
-      { id: 'sr-004a', title: 'Q&A Stream', icon: 'video', thumbnail: null, broadcast_id: 'BC-001', stream_template_id: 'stream_video_1080', live2vod: true, expanded: false },
+      { id: 'sr-004a', title: 'Q&A Stream', icon: 'video', thumbnail: null, broadcast_id: 'BC-001', stream_template_id: 'stream_video_1080', live2vod: true, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_monthly', 'plan_annual'], segment_ids: ['seg_junior_members', 'seg_family_pass'], combine_mode: 'OR' }, expanded: false },
     ],
     vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_004', isDraft: false,
   },
@@ -262,8 +317,8 @@ const initialEvents: LiveEvent[] = [
     event_start_time: '2026-01-24T19:30:00', kickoff_time: '2026-01-24T20:00:00', event_end_time: '2026-01-24T22:00:00',
     image_16x9: null, currentViewers: 0, peakViewers: 18942,
     streams: [
-      { id: 'sr-005a', title: 'HD Broadcast', icon: 'video', thumbnail: null, broadcast_id: 'BC-001', stream_template_id: 'stream_video_1080', live2vod: true, expanded: false },
-      { id: 'sr-005b', title: 'Radio Feed',   icon: 'radio', thumbnail: null, broadcast_id: 'BC-002', stream_template_id: 'stream_audio_only', live2vod: false, expanded: false },
+      { id: 'sr-005a', title: 'HD Broadcast', icon: 'video', thumbnail: null, broadcast_id: 'BC-001', stream_template_id: 'stream_video_1080', live2vod: true, rights: { geo_profile: 'North America Only', geo_countries: [], subscription_plans: ['plan_season', 'plan_premium'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
+      { id: 'sr-005b', title: 'Radio Feed',   icon: 'radio', thumbnail: null, broadcast_id: 'BC-002', stream_template_id: 'stream_audio_only', live2vod: false, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_free'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
     ],
     vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_005', isDraft: false,
   },
@@ -345,6 +400,148 @@ function ImageUploadZone({ label, aspectLabel, image, onUpload, onRemove, aspect
   );
 }
 
+function RightsPanel({ rights, onChange }: { rights: StreamRights; onChange: (r: StreamRights) => void }) {
+  const [countrySearch, setCountrySearch] = useState('');
+  const [segmentSearch, setSegmentSearch] = useState('');
+  const filteredCountries = countrySearch
+    ? COUNTRIES.filter(c => c.toLowerCase().includes(countrySearch.toLowerCase()) && !rights.geo_countries.includes(c))
+    : [];
+  const filteredSegments = segmentSearch
+    ? SEGMENT_LIBRARY.filter(s => s.display_name.toLowerCase().includes(segmentSearch.toLowerCase()) && !rights.segment_ids.includes(s.id))
+    : [];
+  const showCombineToggle = rights.subscription_plans.length > 0 && rights.segment_ids.length > 0;
+
+  return (
+    <div className="bg-slate-50 border-t border-slate-200 px-5 py-4 space-y-4">
+      <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Rights Restrictions</p>
+
+      <div>
+        <label className="text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1.5">
+          <Globe size={14} className="text-slate-400" /> Geo-Profile
+        </label>
+        <select value={rights.geo_profile} onChange={e => onChange({ ...rights, geo_profile: e.target.value })}
+          className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm">
+          <option value="">No geo-profile selected</option>
+          {GEO_PROFILES.map(g => <option key={g} value={g}>{g}</option>)}
+        </select>
+      </div>
+
+      <div>
+        <label className="text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1.5">
+          <MapPin size={14} className="text-slate-400" /> Geo-Country Restrictions
+        </label>
+        {rights.geo_countries.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {rights.geo_countries.map(c => (
+              <span key={c} className="inline-flex items-center gap-1 px-2.5 py-1 bg-red-100 text-red-800 rounded-full text-xs font-medium">
+                {c}<button onClick={() => onChange({ ...rights, geo_countries: rights.geo_countries.filter(x => x !== c) })} className="hover:text-red-600"><X size={12} /></button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="relative">
+          <input type="text" value={countrySearch} onChange={e => setCountrySearch(e.target.value)}
+            placeholder="Search and add blocked countries..."
+            className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm" />
+          {filteredCountries.length > 0 && (
+            <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-40 overflow-y-auto">
+              {filteredCountries.map(c => (
+                <button key={c} onClick={() => { onChange({ ...rights, geo_countries: [...rights.geo_countries, c] }); setCountrySearch(''); }}
+                  className="w-full px-3.5 py-2 text-left hover:bg-slate-50 text-sm">{c}</button>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div>
+        <label className="text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1.5">
+          <CreditCard size={14} className="text-slate-400" /> Subscription Requirement
+        </label>
+        {rights.subscription_plans.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {rights.subscription_plans.map(pId => {
+              const plan = SUBSCRIPTION_PLANS.find(p => p.id === pId);
+              return (
+                <span key={pId} className="inline-flex items-center gap-1 px-2.5 py-1 bg-violet-100 text-violet-800 rounded-full text-xs font-medium">
+                  {plan?.name || pId}
+                  <button onClick={() => onChange({ ...rights, subscription_plans: rights.subscription_plans.filter(x => x !== pId) })} className="hover:text-violet-600"><X size={12} /></button>
+                </span>
+              );
+            })}
+          </div>
+        )}
+        <select onChange={e => { if (e.target.value && !rights.subscription_plans.includes(e.target.value)) { onChange({ ...rights, subscription_plans: [...rights.subscription_plans, e.target.value] }); } e.target.value = ''; }}
+          className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm">
+          <option value="">Add subscription plan...</option>
+          {SUBSCRIPTION_PLANS.filter(p => !rights.subscription_plans.includes(p.id)).map(p => (
+            <option key={p.id} value={p.id}>{p.name} – {p.description}</option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="text-sm font-medium text-slate-700 mb-1.5 flex items-center gap-1.5">
+          <Users size={14} className="text-slate-400" /> Audience Segments
+          <span className="text-[10px] font-normal text-slate-400">(YinzCam segmentation)</span>
+        </label>
+        {rights.segment_ids.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mb-2">
+            {rights.segment_ids.map(sId => {
+              const seg = SEGMENT_LIBRARY.find(s => s.id === sId);
+              return (
+                <span key={sId} className="inline-flex items-center gap-1 px-2.5 py-1 bg-sky-100 text-sky-800 rounded-full text-xs font-medium">
+                  {seg?.display_name || sId}
+                  {!seg && <span className="text-[9px] text-amber-700 bg-amber-100 rounded px-1 py-0.5">unknown</span>}
+                  <button onClick={() => onChange({ ...rights, segment_ids: rights.segment_ids.filter(x => x !== sId) })} className="hover:text-sky-600"><X size={12} /></button>
+                </span>
+              );
+            })}
+          </div>
+        )}
+        <div className="relative">
+          <input type="text" value={segmentSearch} onChange={e => setSegmentSearch(e.target.value)}
+            placeholder="Search and add audience segments..."
+            className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm" />
+          {filteredSegments.length > 0 && (
+            <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+              {filteredSegments.map(s => (
+                <button key={s.id} onClick={() => { onChange({ ...rights, segment_ids: [...rights.segment_ids, s.id] }); setSegmentSearch(''); }}
+                  className="w-full px-3.5 py-2 text-left hover:bg-slate-50 text-sm flex items-center justify-between">
+                  <span>{s.display_name}</span>
+                  <code className="text-[10px] text-slate-400 font-mono">{s.id}</code>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <p className="text-[10px] text-slate-500 mt-1.5">Segments are managed in the YinzCam Audiences module.</p>
+      </div>
+
+      {showCombineToggle && (
+        <div className="bg-white border border-slate-300 rounded-lg p-3">
+          <label className="text-xs font-semibold text-slate-700 uppercase tracking-wider mb-2 block">Match logic</label>
+          <div className="flex items-center gap-2 mb-1">
+            <button type="button" onClick={() => onChange({ ...rights, combine_mode: 'AND' })}
+              className={`flex-1 px-3 py-2 rounded-lg border-2 text-xs font-medium transition-colors ${rights.combine_mode === 'AND' ? 'border-violet-500 bg-violet-50 text-violet-800' : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300'}`}>
+              Plan <strong>AND</strong> segment
+            </button>
+            <button type="button" onClick={() => onChange({ ...rights, combine_mode: 'OR' })}
+              className={`flex-1 px-3 py-2 rounded-lg border-2 text-xs font-medium transition-colors ${rights.combine_mode === 'OR' ? 'border-violet-500 bg-violet-50 text-violet-800' : 'border-slate-200 bg-white text-slate-600 hover:border-violet-300'}`}>
+              Plan <strong>OR</strong> segment
+            </button>
+          </div>
+          <p className="text-[10px] text-slate-500">
+            {rights.combine_mode === 'AND'
+              ? 'Stricter – viewer must hold one of the listed plans AND be in one of the listed segments.'
+              : 'Looser – viewer passes if they hold one of the listed plans OR are in one of the listed segments.'}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function StreamRowCard({ row, index, onUpdate, onRemove, allStreams, vipEnabled, onVipEnabledChange, vipRosterCount }: {
   row: StreamRow; index: number; onUpdate: (r: StreamRow) => void; onRemove: () => void;
   allStreams: StreamRow[]; vipEnabled: boolean; onVipEnabledChange: (enabled: boolean) => void; vipRosterCount: number;
@@ -352,6 +549,7 @@ function StreamRowCard({ row, index, onUpdate, onRemove, allStreams, vipEnabled,
   const broadcast = CLIENT_BROADCASTS.find(b => b.broadcast_id === row.broadcast_id);
   const template  = STREAM_TEMPLATES.find(t => t.template_id === row.stream_template_id);
   const isConfigured = !!row.broadcast_id && !!row.stream_template_id;
+  const hasRights = !!row.rights.geo_profile || row.rights.geo_countries.length > 0 || row.rights.subscription_plans.length > 0 || row.rights.segment_ids.length > 0;
 
   const isFirstVideoForBroadcast = useMemo(() => {
     if (!row.broadcast_id || !template || template.icon !== 'video') return false;
@@ -394,6 +592,7 @@ function StreamRowCard({ row, index, onUpdate, onRemove, allStreams, vipEnabled,
                 placeholder="Enter stream name..." />
               <Edit3 size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
             </div>
+            {hasRights && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 flex-shrink-0">Rights set</span>}
           </div>
           <button onClick={onRemove} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0 ml-2" title="Remove stream">
             <Trash2 size={16} />
@@ -479,6 +678,29 @@ function StreamRowCard({ row, index, onUpdate, onRemove, allStreams, vipEnabled,
           </div>
         </div>
       </div>
+
+      {isConfigured && (
+        <div className="border-t border-slate-200">
+          <button onClick={() => onUpdate({ ...row, expanded: !row.expanded })}
+            className={`w-full px-5 py-3 flex items-center justify-between transition-colors ${row.expanded ? 'bg-violet-50' : hasRights ? 'bg-violet-50 hover:bg-violet-100' : 'bg-slate-50 hover:bg-slate-100'}`}>
+            <div className="flex items-center gap-2.5">
+              <Shield size={16} className={hasRights ? 'text-violet-600' : 'text-slate-400'} />
+              <span className={`text-sm font-semibold ${hasRights ? 'text-violet-800' : 'text-slate-600'}`}>Rights &amp; Restrictions</span>
+              {hasRights ? (
+                <div className="flex items-center gap-2">
+                  {row.rights.geo_profile && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-violet-200 text-violet-800 flex items-center gap-1"><Globe size={9} />{row.rights.geo_profile}</span>}
+                  {row.rights.geo_countries.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700 flex items-center gap-1"><MapPin size={9} />{row.rights.geo_countries.length} blocked</span>}
+                  {row.rights.subscription_plans.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-violet-200 text-violet-800 flex items-center gap-1"><CreditCard size={9} />{row.rights.subscription_plans.length} plan{row.rights.subscription_plans.length > 1 ? 's' : ''}</span>}
+                  {row.rights.segment_ids.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 flex items-center gap-1"><Users size={9} />{row.rights.segment_ids.length} segment{row.rights.segment_ids.length > 1 ? 's' : ''}</span>}
+                  {row.rights.subscription_plans.length > 0 && row.rights.segment_ids.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">{row.rights.combine_mode}</span>}
+                </div>
+              ) : <span className="text-[10px] text-slate-400">Not configured</span>}
+            </div>
+            {row.expanded ? <ChevronUp size={16} className="text-violet-500" /> : <ChevronDown size={16} className="text-slate-400" />}
+          </button>
+          {row.expanded && <RightsPanel rights={row.rights} onChange={r => onUpdate({ ...row, rights: r })} />}
+        </div>
+      )}
     </div>
   );
 }
@@ -909,6 +1131,7 @@ function EventDetailsModal({ event, onClose, onEdit }: {
                 const template  = STREAM_TEMPLATES.find(t => t.template_id === stream.stream_template_id);
                 const si        = STREAM_ICONS.find(ic => ic.id === stream.icon);
                 const StreamIconComp = si ? si.Icon : Video;
+                const hasRights = !!stream.rights.geo_profile || stream.rights.geo_countries.length > 0 || stream.rights.subscription_plans.length > 0 || stream.rights.segment_ids.length > 0;
                 return (
                   <div key={stream.id} className="border border-slate-200 rounded-xl p-5">
                     <div className="flex items-center gap-3 mb-4">
@@ -929,6 +1152,18 @@ function EventDetailsModal({ event, onClose, onEdit }: {
                         {template ? <><p className="text-sm font-medium text-slate-900">{template.display_name}</p><p className="text-[10px] text-slate-500 mt-0.5">{template.description}</p></> : <p className="text-sm text-slate-400">Not assigned</p>}
                       </div>
                     </div>
+                    {hasRights && (
+                      <div className="border-t border-slate-200 pt-3">
+                        <div className="flex items-center gap-2 mb-2"><Shield size={14} className="text-violet-600" /><span className="text-xs font-semibold text-violet-800">Rights & Restrictions</span></div>
+                        <div className="flex flex-wrap gap-2">
+                          {stream.rights.geo_profile && <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-violet-100 text-violet-800 flex items-center gap-1"><Globe size={10} /> {stream.rights.geo_profile}</span>}
+                          {stream.rights.geo_countries.length > 0 && <span className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-700 flex items-center gap-1"><MapPin size={10} /> {stream.rights.geo_countries.length} countries blocked</span>}
+                          {stream.rights.subscription_plans.map(pId => { const plan = SUBSCRIPTION_PLANS.find(p => p.id === pId); return <span key={pId} className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-violet-100 text-violet-800">{plan?.name || pId}</span>; })}
+                          {stream.rights.subscription_plans.length > 0 && stream.rights.segment_ids.length > 0 && <span className="text-[10px] font-bold px-2 py-1 rounded-full bg-slate-200 text-slate-700">{stream.rights.combine_mode}</span>}
+                          {stream.rights.segment_ids.map(sId => { const seg = SEGMENT_LIBRARY.find(s => s.id === sId); return <span key={sId} className="text-[10px] font-medium px-2.5 py-1 rounded-full bg-sky-100 text-sky-800 flex items-center gap-1"><Users size={10} /> {seg?.display_name || sId}</span>; })}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 );
               })}
@@ -1397,9 +1632,6 @@ export default function EventManager() {
             ) : (
               <div className="space-y-4">
                 {activeFilteredEvents.map(event => {
-                  const configuredStreams = event.streams.filter(s => s.broadcast_id && s.stream_template_id);
-                  const hasLive2VOD = event.streams.some(s => s.live2vod);
-                  const broadcastTypes = Array.from(new Set(event.streams.map(s => CLIENT_BROADCASTS.find(bc => bc.broadcast_id === s.broadcast_id)?.protocol_label).filter(Boolean) as string[]));
                   const missingFields  = getMissingFields(event);
 
                   return (
@@ -1436,13 +1668,6 @@ export default function EventManager() {
                             <span className="flex items-center gap-1"><Calendar size={16} /> {formatShortDate(event.kickoff_time)}</span>
                           </div>
 
-                          <div className="flex items-center gap-2 flex-wrap">
-                            <span className="px-2 py-1 bg-emerald-100 text-emerald-700 rounded text-xs font-medium flex items-center gap-1"><Video size={12} /> {configuredStreams.length} Stream{configuredStreams.length !== 1 ? 's' : ''}</span>
-                            {broadcastTypes.map(bt => { const inputType = CLIENT_BROADCASTS.find(b => b.protocol_label === bt)?.input_type; return <span key={bt} className={`px-2 py-1 rounded text-xs font-medium ${inputType ? INPUT_TYPE_COLORS[inputType] : 'bg-slate-100 text-slate-600'}`}>{bt}</span>; })}
-                            {hasLive2VOD && <span className="px-2 py-1 bg-amber-100 text-amber-700 rounded text-xs font-medium flex items-center gap-1"><Archive size={12} /> Live2VOD</span>}
-                            {event.includeMatchDetails && <span className="px-2 py-1 bg-slate-100 text-slate-600 rounded text-xs font-medium">Match Details</span>}
-                            {event.vip_delivery?.enabled && <span className="px-2 py-1 bg-amber-100 text-amber-800 rounded text-xs font-medium flex items-center gap-1 border border-amber-300"><Crown size={12} /> VIP · {rosterActiveCount}</span>}
-                          </div>
 
                           {event.status !== 'draft' && (
                             <div className="flex items-center gap-3 mt-3 pt-3 border-t border-slate-100">
