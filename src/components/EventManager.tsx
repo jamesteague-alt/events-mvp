@@ -1,41 +1,89 @@
 import React, { useState, useMemo, useId } from 'react';
 import {
-  Search, Filter, Radio, Video, Calendar, MapPin, Users, Globe, Eye, Edit2,
+  Search, Filter, Radio, Video, Calendar, MapPin, Users, Globe, Eye, EyeOff, Edit2,
   Trash2, Copy, Check, ChevronDown, ChevronUp, X, Clock, Upload,
-  AlertCircle, Plus, Archive, Shield, CreditCard,
+  AlertCircle, Plus, Archive, Shield, CreditCard, Captions,
   Power, Square, Zap, Activity, Play, Volume2, VolumeX, Monitor,
-  ChevronLeft, ChevronRight, Pause, Maximize2, Edit3,
+  ChevronLeft, ChevronRight, Pause, Maximize2,
   Crown, Mail, UserPlus, UserX, RefreshCw,
 } from 'lucide-react';
 
 // ─── TYPE DEFINITIONS ────────────────────────────────────────────────────────
 
-type BroadcastStatus = 'ACTIVE' | 'INACTIVE' | 'IN_USE' | 'MAINTENANCE';
 type InputType = 'RTMP_PUSH' | 'SRT_CALLER' | 'RTP_PUSH' | 'HLS_PULL' | 'MEDIACONNECT';
 type EventStatus = 'live' | 'upcoming' | 'ended' | 'draft';
 type ChannelState = 'idle' | 'starting' | 'running' | 'stopping';
 type ViewMode = 'listing' | 'create' | 'edit' | 'vip-members';
 type VipDistributionStatus = 'pending' | 'queued' | 'sent' | 'failed';
 
-interface Broadcast {
-  broadcast_id: string;
-  broadcast_name: string;
+// ─── BROADCAST PRESETS ───────────────────────────────────────────────────────
+type PresetStatus = 'ACTIVE' | 'IN_USE';
+
+interface PresetInput {
   input_type: InputType;
-  status: BroadcastStatus;
   protocol_label: string;
-  description: string;
   endpoint_url: string;
   endpoint_port?: number;
   stream_key?: string;
 }
 
-interface StreamTemplate {
-  template_id: string;
-  display_name: string;
-  description: string;
-  icon: 'video' | 'radio';
-  specs: string[];
-  cdn_destination: string;
+interface PresetOutput {
+  type: 'video' | 'radio';
+  name: string;       // e.g. "Live Video", "Live Audio (Radio)"
+  codec: string;      // e.g. "H.264 AVC", "AAC-LC"
+  resolution: string; // shortened, e.g. "1080p" ("—" for audio)
+  bitrate: string;    // e.g. "5 Mbps", "128 kbps"
+}
+
+// Broadcast "extras" — toggled on the preset, surfaced per-stream as pills/boxes (like Live2VOD).
+interface PresetExtras {
+  live2vod: boolean;
+  vip: boolean;       // mirror video streams to the VIP roster
+  captions: boolean;  // Live Captions — ENG
+}
+
+interface BroadcastPreset {
+  preset_id: string;
+  name: string;
+  status: PresetStatus;
+  input: PresetInput;
+  outputs: PresetOutput[];
+  extras: PresetExtras;
+}
+
+// ─── DATA INTEGRATION (Opta / stats feed) ────────────────────────────────────
+type StatsFeedProvider = 'opta' | 'statsperform' | 'genius' | 'sportradar';
+type SourceProvider = StatsFeedProvider | 'manual';
+
+interface CatalogFixture {
+  opta_id: string;
+  home_team: string;
+  away_team: string;
+  competition: string;
+  round: string;
+  venue: string;
+  kickoff_iso: string;
+}
+
+interface StatsFeedSettings {
+  provider: StatsFeedProvider;
+  primary_team_display: string;
+  credentials_configured: boolean;
+  competitions_in_scope: string[];
+  default_pull_count: number;
+}
+
+interface SourceMatch {
+  provider: SourceProvider;
+  source_id: string;
+  pulled_at: string;
+  raw_snapshot: {
+    home_team: string;
+    away_team: string;
+    competition: string;
+    venue: string;
+    kickoff_iso: string;
+  };
 }
 
 interface StreamRights {
@@ -53,12 +101,13 @@ interface SegmentDefinition {
 
 interface StreamRow {
   id: string;
-  title: string;
-  icon: string;
-  thumbnail?: { name: string; url: string } | null;
-  broadcast_id: string;
-  stream_template_id: string;
+  preset_id: string;
+  preset_name: string;
+  input: PresetInput;
+  output: PresetOutput;
   live2vod: boolean;
+  vip: boolean;
+  captions: boolean;
   rights: StreamRights;
   expanded: boolean;
 }
@@ -93,10 +142,15 @@ interface LiveEvent {
   homeTeam: string;
   awayTeam: string;
   competition: string;
+  round: string;
   venue: string;
   event_start_time: string;
   kickoff_time: string;
   event_end_time: string;
+  opta_id: string;
+  external_id: string;
+  source_match?: SourceMatch;
+  visibility: 'visible' | 'hidden';
   image_16x9: { name: string; url: string } | null;
   currentViewers: number;
   peakViewers: number;
@@ -108,20 +162,70 @@ interface LiveEvent {
 
 // ─── SHARED CONSTANTS ────────────────────────────────────────────────────────
 
-const CLIENT_BROADCASTS: Broadcast[] = [
-  { broadcast_id: 'BC-001', broadcast_name: 'Primary RTMP Input',        input_type: 'RTMP_PUSH',    status: 'ACTIVE',   protocol_label: 'RTMP Push',    description: 'Main stadium encoder',              endpoint_url: 'rtmp://ingest.medialive.eu-west-2.amazonaws.com/live',                            stream_key: 'bc001-a1b2c3d4e5f6' },
-  { broadcast_id: 'BC-002', broadcast_name: 'Stadium SRT Feed',          input_type: 'SRT_CALLER',   status: 'ACTIVE',   protocol_label: 'SRT Caller',   description: 'Low-latency encrypted feed',         endpoint_url: 'srt://ingest.medialive.eu-west-2.amazonaws.com',                                  endpoint_port: 9001 },
-  { broadcast_id: 'BC-003', broadcast_name: 'Backup HLS Source',         input_type: 'HLS_PULL',     status: 'ACTIVE',   protocol_label: 'HLS Pull',     description: 'Pull from S3 or HTTP server',        endpoint_url: 'https://s3.eu-west-2.amazonaws.com/yc-live-backup/stream.m3u8' },
-  { broadcast_id: 'BC-004', broadcast_name: 'Training Ground Camera',    input_type: 'RTMP_PUSH',    status: 'IN_USE',   protocol_label: 'RTMP Push',    description: 'Remote training facility encoder',   endpoint_url: 'rtmp://ingest.medialive.eu-west-2.amazonaws.com/training',                        stream_key: 'bc004-x7y8z9w0v1u2' },
-  { broadcast_id: 'BC-005', broadcast_name: 'MediaConnect Contribution', input_type: 'MEDIACONNECT', status: 'ACTIVE',   protocol_label: 'MediaConnect', description: 'AWS MediaConnect flow',              endpoint_url: 'arn:aws:mediaconnect:eu-west-2:123456789:flow:bc005-main' },
+const BROADCAST_PRESETS: BroadcastPreset[] = [
+  {
+    preset_id: 'preset_stadium_hd', name: 'Stadium HD — Video + Radio', status: 'ACTIVE',
+    input: { input_type: 'RTMP_PUSH', protocol_label: 'RTMP Push', endpoint_url: 'rtmp://ingest.medialive.eu-west-2.amazonaws.com/live', stream_key: 'bc001-a1b2c3d4e5f6' },
+    outputs: [
+      { type: 'video', name: 'Live Video',         codec: 'H.264 AVC', resolution: '1080p', bitrate: '5 Mbps' },
+      { type: 'radio', name: 'Live Audio (Radio)', codec: 'AAC-LC',    resolution: '—',     bitrate: '128 kbps' },
+    ],
+    extras: { live2vod: true, vip: true, captions: true },
+  },
+  {
+    preset_id: 'preset_srt_video', name: 'SRT Low-Latency — Video', status: 'ACTIVE',
+    input: { input_type: 'SRT_CALLER', protocol_label: 'SRT Caller', endpoint_url: 'srt://ingest.medialive.eu-west-2.amazonaws.com', endpoint_port: 9001 },
+    outputs: [
+      { type: 'video', name: 'Live Video', codec: 'H.264 AVC', resolution: '1080p', bitrate: '5 Mbps' },
+    ],
+    extras: { live2vod: true, vip: false, captions: false },
+  },
+  {
+    preset_id: 'preset_mediaconnect_multi', name: 'MediaConnect — Multi-bitrate + Radio', status: 'ACTIVE',
+    input: { input_type: 'MEDIACONNECT', protocol_label: 'MediaConnect', endpoint_url: 'arn:aws:mediaconnect:eu-west-2:123456789:flow:bc005-main' },
+    outputs: [
+      { type: 'video', name: 'Live Video (HD)',    codec: 'H.264 AVC', resolution: '1080p', bitrate: '6 Mbps' },
+      { type: 'video', name: 'Live Video (SD)',    codec: 'H.264 AVC', resolution: '720p',  bitrate: '3 Mbps' },
+      { type: 'radio', name: 'Live Audio (Radio)', codec: 'AAC-LC',    resolution: '—',     bitrate: '128 kbps' },
+    ],
+    extras: { live2vod: false, vip: true, captions: true },
+  },
+  {
+    preset_id: 'preset_training_hls', name: 'Training Ground — HLS Pull', status: 'IN_USE',
+    input: { input_type: 'HLS_PULL', protocol_label: 'HLS Pull', endpoint_url: 'https://s3.eu-west-2.amazonaws.com/yc-live-backup/stream.m3u8' },
+    outputs: [
+      { type: 'video', name: 'Live Video', codec: 'H.264 AVC', resolution: '720p', bitrate: '3 Mbps' },
+    ],
+    extras: { live2vod: false, vip: false, captions: false },
+  },
 ];
 
-const STREAM_TEMPLATES: StreamTemplate[] = [
-  { template_id: 'stream_video_1080', display_name: 'Video', description: 'Full HD live video – HLS to Live', icon: 'video', specs: ['H.264 AVC', '1920×1080 @ 5Mbps', 'AAC-LC 128kbps'], cdn_destination: 'Live' },
-  { template_id: 'stream_audio_only', display_name: 'Radio', description: 'Radio-style commentary – HLS to Live', icon: 'radio', specs: ['AAC-LC 128kbps', '48kHz Stereo'], cdn_destination: 'Live' },
+const FIXTURE_CATALOG: CatalogFixture[] = [
+  { opta_id: 'g2412345', home_team: 'Burnley FC',       away_team: 'Blackburn Rovers', competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',          kickoff_iso: '2026-03-15T15:00:00+00:00' },
+  { opta_id: 'g2412401', home_team: 'Birmingham City',  away_team: 'Burnley FC',       competition: 'EFL Championship', round: 'Regular Season', venue: "St Andrew's",        kickoff_iso: '2026-03-22T15:00:00+00:00' },
+  { opta_id: 'g2412458', home_team: 'Burnley FC',       away_team: 'Leicester City',   competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',          kickoff_iso: '2026-03-29T13:30:00+00:00' },
+  { opta_id: 'g2412513', home_team: 'Sheffield United', away_team: 'Burnley FC',       competition: 'EFL Championship', round: 'Regular Season', venue: 'Bramall Lane',       kickoff_iso: '2026-04-04T17:30:00+00:00' },
+  { opta_id: 'g2412571', home_team: 'Burnley FC',       away_team: 'Leeds United',     competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',          kickoff_iso: '2026-04-12T12:00:00+00:00' },
+  { opta_id: 'g2412628', home_team: 'Sunderland',       away_team: 'Burnley FC',       competition: 'EFL Championship', round: 'Regular Season', venue: 'Stadium of Light',   kickoff_iso: '2026-04-18T15:00:00+00:00' },
+  { opta_id: 'g2412684', home_team: 'Burnley FC',       away_team: 'Middlesbrough',    competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',          kickoff_iso: '2026-04-26T15:00:00+00:00' },
+  { opta_id: 'g2412741', home_team: 'Burnley FC',       away_team: 'West Brom',        competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',          kickoff_iso: '2026-05-03T15:00:00+00:00' },
+  { opta_id: 'g2412798', home_team: 'Norwich City',     away_team: 'Burnley FC',       competition: 'EFL Championship', round: 'Regular Season', venue: 'Carrow Road',        kickoff_iso: '2026-05-09T12:30:00+00:00' },
+  { opta_id: 'g2412855', home_team: 'Burnley FC',       away_team: 'Coventry City',    competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',          kickoff_iso: '2026-05-17T15:00:00+00:00' },
+  { opta_id: 'fc2400988', home_team: 'Burnley FC',      away_team: 'Watford',          competition: 'FA Cup',           round: 'Round 4', venue: 'Turf Moor',          kickoff_iso: '2026-03-25T19:45:00+00:00' },
+  { opta_id: 'fc2401012', home_team: 'Burnley FC',      away_team: 'Bolton Wanderers', competition: 'FA Cup',           round: 'Round 5', venue: 'Turf Moor',          kickoff_iso: '2026-04-08T19:45:00+00:00' },
+  { opta_id: 'lc2400677', home_team: 'Burnley FC',      away_team: 'Wigan Athletic',   competition: 'EFL Cup',          round: 'Round 3', venue: 'Turf Moor',          kickoff_iso: '2026-03-19T19:45:00+00:00' },
+  { opta_id: 'g2412912', home_team: 'Burnley FC',       away_team: 'Birmingham City',  competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',          kickoff_iso: '2026-05-24T15:00:00+00:00' },
+  { opta_id: 'g2412969', home_team: 'Leicester City',   away_team: 'Burnley FC',       competition: 'EFL Championship', round: 'Regular Season', venue: 'King Power Stadium', kickoff_iso: '2026-05-31T16:30:00+00:00' },
 ];
 
-const LIVE2VOD_SPEC = { description: 'Archive to S3 for on-demand replay', specs: ['H.264 AVC', '1920×1080 @ 8Mbps', 'AAC-LC 192kbps'], cdn_destination: 'S3 Archive' };
+const initialStatsFeedSettings: StatsFeedSettings = {
+  provider: 'opta',
+  primary_team_display: 'Burnley FC',
+  credentials_configured: true,
+  competitions_in_scope: ['EFL Championship', 'FA Cup', 'EFL Cup'],
+  default_pull_count: 10,
+};
+
 const TEAMS = [
   'Burnley FC', 'Blackburn Rovers', 'Birmingham City', 'Leicester City',
   'Sheffield United', 'Leeds United', 'Sunderland', 'Middlesbrough',
@@ -138,6 +242,8 @@ const VENUES = [
 ];
 
 const COMPETITIONS = ['EFL Championship', 'FA Cup', 'EFL Cup', 'Friendly', 'Pre-Season', 'NWSL Regular Season'];
+
+const ROUNDS = ['Regular Season', 'Group Stage', 'Round 3', 'Round 4', 'Round 5', 'Round of 16', 'Quarter-final', 'Semi-final', 'Final', 'Play-off', 'Replay'];
 
 const GEO_PROFILES = [
   'Worldwide (No Restrictions)', 'Domestic Only', 'International Only',
@@ -247,53 +353,89 @@ const getMissingFields = (event: LiveEvent): string[] => {
   return missing;
 };
 
+const EMPTY_STREAM_RIGHTS: StreamRights = { geo_profile: '', geo_countries: [], subscription_plans: [], segment_ids: [], combine_mode: 'AND' };
+
 let rowCounter = 100;
-const createStreamRow = (overrides: Partial<StreamRow> = {}): StreamRow => ({
-  id: `sr-${++rowCounter}`,
-  title: `Stream ${rowCounter - 100}`,
-  icon: 'video',
-  thumbnail: null,
-  broadcast_id: '',
-  stream_template_id: '',
-  live2vod: false,
-  rights: { geo_profile: '', geo_countries: [], subscription_plans: [], segment_ids: [], combine_mode: 'AND' },
-  expanded: false,
-  ...overrides,
-});
+// Generate one read-only Live Stream per preset output, ready for Rights & Restrictions.
+const streamsFromPreset = (preset: BroadcastPreset): StreamRow[] =>
+  preset.outputs.map(output => ({
+    id: `sr-${++rowCounter}`,
+    preset_id: preset.preset_id,
+    preset_name: preset.name,
+    input: preset.input,
+    output,
+    live2vod: preset.extras.live2vod,
+    vip: preset.extras.vip,
+    captions: preset.extras.captions,
+    rights: { ...EMPTY_STREAM_RIGHTS },
+    expanded: false,
+  }));
+
+const getReadiness = (event: LiveEvent): 'Draft' | 'Ready' => (event.streams.length > 0 ? 'Ready' : 'Draft');
+
+// ─── DATA-INTEGRATION LOOKUP ─────────────────────────────────────────────────
+type LookupMode  = 'id' | 'search';
+type LookupState = 'idle' | 'searching' | 'matched' | 'not_found';
+
+const lookupFixture = (idOrSearch: string, mode: LookupMode): CatalogFixture | null => {
+  const q = idOrSearch.trim().toLowerCase();
+  if (!q) return null;
+  if (mode === 'id') return FIXTURE_CATALOG.find(f => f.opta_id.toLowerCase() === q) || null;
+  return FIXTURE_CATALOG.find(f =>
+    f.home_team.toLowerCase().includes(q) || f.away_team.toLowerCase().includes(q) || f.competition.toLowerCase().includes(q)
+  ) || null;
+};
 
 // ─── MOCK INITIAL EVENTS ─────────────────────────────────────────────────────
+
+const RTMP_INPUT: PresetInput = { input_type: 'RTMP_PUSH', protocol_label: 'RTMP Push', endpoint_url: 'rtmp://ingest.medialive.eu-west-2.amazonaws.com/live', stream_key: 'bc001-a1b2c3d4e5f6' };
+const SRT_INPUT: PresetInput  = { input_type: 'SRT_CALLER', protocol_label: 'SRT Caller', endpoint_url: 'srt://ingest.medialive.eu-west-2.amazonaws.com', endpoint_port: 9001 };
+const OUT_VIDEO: PresetOutput = { type: 'video', name: 'Live Video', codec: 'H.264 AVC', resolution: '1080p', bitrate: '5 Mbps' };
+const OUT_RADIO: PresetOutput = { type: 'radio', name: 'Live Audio (Radio)', codec: 'AAC-LC', resolution: '—', bitrate: '128 kbps' };
+
+// Seed dates are computed relative to "today" so the listing's date sort + Previous Events reveal are demonstrable.
+const DAY_MS = 86400000;
+const seedISO = (offsetDays: number, h: number, m: number): string => {
+  const d = new Date(Date.now() + offsetDays * DAY_MS); d.setHours(h, m, 0, 0); return d.toISOString();
+};
+const seedStreams = (presetId: string): StreamRow[] => streamsFromPreset(BROADCAST_PRESETS.find(p => p.preset_id === presetId)!);
 
 const initialEvents: LiveEvent[] = [
   {
     id: 'evt_001', title: 'KC Current vs Portland Thorns',
     description: 'Regular season match featuring two top teams in the league',
     status: 'live', channelState: 'running', includeMatchDetails: true,
-    homeTeam: 'KC Current', awayTeam: 'Portland Thorns', competition: 'NWSL Regular Season', venue: 'CPKC Stadium',
-    event_start_time: '2026-01-26T18:30:00', kickoff_time: '2026-01-26T19:00:00', event_end_time: '2026-01-26T21:00:00',
+    homeTeam: 'KC Current', awayTeam: 'Portland Thorns', competition: 'NWSL Regular Season', round: 'Regular Season', venue: 'CPKC Stadium',
+    event_start_time: seedISO(0, 18, 30), kickoff_time: seedISO(0, 19, 0), event_end_time: seedISO(0, 21, 0),
+    opta_id: 'g8812345', external_id: '',
+    source_match: { provider: 'opta', source_id: 'g8812345', pulled_at: '2026-01-20T10:00:00Z', raw_snapshot: { home_team: 'KC Current', away_team: 'Portland Thorns', competition: 'NWSL Regular Season', venue: 'CPKC Stadium', kickoff_iso: '2026-01-26T19:00:00' } },
+    visibility: 'visible',
     image_16x9: null, currentViewers: 12453, peakViewers: 15782,
     streams: [
-      { id: 'sr-001a', title: 'Main Broadcast', icon: 'video', thumbnail: null, broadcast_id: 'BC-001', stream_template_id: 'stream_video_1080', live2vod: true, rights: { geo_profile: 'Domestic Only', geo_countries: [], subscription_plans: ['plan_season', 'plan_premium'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
-      { id: 'sr-001b', title: 'Audio Commentary', icon: 'radio', thumbnail: null, broadcast_id: 'BC-002', stream_template_id: 'stream_audio_only', live2vod: false, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_free'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
+      { id: 'sr-001a', preset_id: 'preset_stadium_hd', preset_name: 'Stadium HD — Video + Radio', input: RTMP_INPUT, output: OUT_VIDEO,    live2vod: true,  vip: true, captions: true, rights: { geo_profile: 'Domestic Only', geo_countries: [], subscription_plans: ['plan_season', 'plan_premium'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
+      { id: 'sr-001b', preset_id: 'preset_stadium_hd', preset_name: 'Stadium HD — Video + Radio', input: RTMP_INPUT, output: OUT_RADIO,    live2vod: true,  vip: true, captions: true, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_free'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
     ],
-    vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_001', isDraft: false,
+    vip_delivery: { enabled: true, hosted_page_url: 'https://vip.yinzcam.com/burnley/evt_001', distribution_status: 'pending' }, apiUrl: 'https://api.example.com/v1/events/evt_001', isDraft: false,
   },
   {
     id: 'evt_002', title: 'Season Launch Press Conference',
     description: 'Join us for the official 2026 season announcement with special guests',
     status: 'upcoming', channelState: 'idle', includeMatchDetails: false,
-    homeTeam: '', awayTeam: '', competition: '', venue: '',
-    event_start_time: '2026-01-28T13:45:00', kickoff_time: '2026-01-28T14:00:00', event_end_time: '2026-01-28T15:30:00',
+    homeTeam: '', awayTeam: '', competition: '', round: '', venue: '',
+    event_start_time: seedISO(2, 13, 45), kickoff_time: seedISO(2, 14, 0), event_end_time: seedISO(2, 15, 30),
+    opta_id: '', external_id: 'PRESS-2026-001', visibility: 'visible',
     image_16x9: null, currentViewers: 0, peakViewers: 0,
     streams: [
-      { id: 'sr-002a', title: 'Main Feed', icon: 'video', thumbnail: null, broadcast_id: 'BC-003', stream_template_id: 'stream_video_1080', live2vod: true, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_free'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
+      { id: 'sr-002a', preset_id: 'preset_srt_video', preset_name: 'SRT Low-Latency — Video', input: SRT_INPUT, output: OUT_VIDEO, live2vod: true, vip: false, captions: false, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_free'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
     ],
     vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_002', isDraft: false,
   },
   {
     id: 'evt_003', title: 'Orlando Pride vs Washington Spirit',
     description: '', status: 'draft', channelState: 'idle', includeMatchDetails: true,
-    homeTeam: 'Orlando Pride', awayTeam: 'Washington Spirit', competition: 'NWSL Regular Season', venue: '',
-    event_start_time: '2026-01-27T17:00:00', kickoff_time: '2026-01-27T17:30:00', event_end_time: '',
+    homeTeam: 'Orlando Pride', awayTeam: 'Washington Spirit', competition: 'NWSL Regular Season', round: 'Regular Season', venue: '',
+    event_start_time: seedISO(4, 17, 0), kickoff_time: seedISO(4, 17, 30), event_end_time: '',
+    opta_id: '', external_id: '', visibility: 'hidden',
     image_16x9: null, currentViewers: 0, peakViewers: 0,
     streams: [], vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_003', isDraft: true,
   },
@@ -301,11 +443,12 @@ const initialEvents: LiveEvent[] = [
     id: 'evt_004', title: 'Player Q&A Session',
     description: 'Interactive session with star players answering fan questions',
     status: 'ended', channelState: 'idle', includeMatchDetails: false,
-    homeTeam: '', awayTeam: '', competition: '', venue: '',
-    event_start_time: '2026-01-25T15:45:00', kickoff_time: '2026-01-25T16:00:00', event_end_time: '2026-01-25T17:00:00',
+    homeTeam: '', awayTeam: '', competition: '', round: '', venue: '',
+    event_start_time: seedISO(-3, 15, 45), kickoff_time: seedISO(-3, 16, 0), event_end_time: seedISO(-3, 17, 0),
+    opta_id: '', external_id: '', visibility: 'visible',
     image_16x9: null, currentViewers: 0, peakViewers: 8432,
     streams: [
-      { id: 'sr-004a', title: 'Q&A Stream', icon: 'video', thumbnail: null, broadcast_id: 'BC-001', stream_template_id: 'stream_video_1080', live2vod: true, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_monthly', 'plan_annual'], segment_ids: ['seg_junior_members', 'seg_family_pass'], combine_mode: 'OR' }, expanded: false },
+      { id: 'sr-004a', preset_id: 'preset_srt_video', preset_name: 'SRT Low-Latency — Video', input: SRT_INPUT, output: OUT_VIDEO, live2vod: true, vip: false, captions: false, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_monthly', 'plan_annual'], segment_ids: ['seg_junior_members', 'seg_family_pass'], combine_mode: 'OR' }, expanded: false },
     ],
     vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_004', isDraft: false,
   },
@@ -313,14 +456,83 @@ const initialEvents: LiveEvent[] = [
     id: 'evt_005', title: 'San Diego Wave vs OL Reign',
     description: 'Western Conference battle for playoff positioning',
     status: 'ended', channelState: 'idle', includeMatchDetails: true,
-    homeTeam: 'San Diego Wave', awayTeam: 'OL Reign', competition: 'NWSL Regular Season', venue: 'Snapdragon Stadium',
-    event_start_time: '2026-01-24T19:30:00', kickoff_time: '2026-01-24T20:00:00', event_end_time: '2026-01-24T22:00:00',
+    homeTeam: 'San Diego Wave', awayTeam: 'OL Reign', competition: 'NWSL Regular Season', round: 'Regular Season', venue: 'Snapdragon Stadium',
+    event_start_time: seedISO(-6, 19, 30), kickoff_time: seedISO(-6, 20, 0), event_end_time: seedISO(-6, 22, 0),
+    opta_id: 'g8898765', external_id: '',
+    source_match: { provider: 'opta', source_id: 'g8898765', pulled_at: '2026-01-18T09:00:00Z', raw_snapshot: { home_team: 'San Diego Wave', away_team: 'OL Reign', competition: 'NWSL Regular Season', venue: 'Snapdragon Stadium', kickoff_iso: '2026-01-24T20:00:00' } },
+    visibility: 'visible',
     image_16x9: null, currentViewers: 0, peakViewers: 18942,
     streams: [
-      { id: 'sr-005a', title: 'HD Broadcast', icon: 'video', thumbnail: null, broadcast_id: 'BC-001', stream_template_id: 'stream_video_1080', live2vod: true, rights: { geo_profile: 'North America Only', geo_countries: [], subscription_plans: ['plan_season', 'plan_premium'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
-      { id: 'sr-005b', title: 'Radio Feed',   icon: 'radio', thumbnail: null, broadcast_id: 'BC-002', stream_template_id: 'stream_audio_only', live2vod: false, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_free'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
+      { id: 'sr-005a', preset_id: 'preset_stadium_hd', preset_name: 'Stadium HD — Video + Radio', input: RTMP_INPUT, output: OUT_VIDEO, live2vod: true, vip: true, captions: true, rights: { geo_profile: 'North America Only', geo_countries: [], subscription_plans: ['plan_season', 'plan_premium'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
+      { id: 'sr-005b', preset_id: 'preset_stadium_hd', preset_name: 'Stadium HD — Video + Radio', input: RTMP_INPUT, output: OUT_RADIO, live2vod: true, vip: true, captions: true, rights: { geo_profile: 'Worldwide (No Restrictions)', geo_countries: [], subscription_plans: ['plan_free'], segment_ids: [], combine_mode: 'AND' }, expanded: false },
     ],
     vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_005', isDraft: false,
+  },
+  {
+    id: 'evt_006', title: 'Burnley FC vs Bristol City',
+    description: 'EFL Championship matchday at Turf Moor',
+    status: 'ended', channelState: 'idle', includeMatchDetails: true,
+    homeTeam: 'Burnley FC', awayTeam: 'Bristol City', competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',
+    event_start_time: seedISO(-1, 14, 30), kickoff_time: seedISO(-1, 15, 0), event_end_time: seedISO(-1, 17, 0),
+    opta_id: '', external_id: '', visibility: 'visible',
+    image_16x9: null, currentViewers: 0, peakViewers: 9120,
+    streams: seedStreams('preset_srt_video'),
+    vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_006', isDraft: false,
+  },
+  {
+    id: 'evt_007', title: 'Watford vs Burnley FC',
+    description: 'EFL Championship away fixture',
+    status: 'ended', channelState: 'idle', includeMatchDetails: true,
+    homeTeam: 'Watford', awayTeam: 'Burnley FC', competition: 'EFL Championship', round: 'Regular Season', venue: 'Vicarage Road',
+    event_start_time: seedISO(-9, 19, 15), kickoff_time: seedISO(-9, 19, 45), event_end_time: seedISO(-9, 21, 45),
+    opta_id: '', external_id: '', visibility: 'visible',
+    image_16x9: null, currentViewers: 0, peakViewers: 7430,
+    streams: seedStreams('preset_srt_video'),
+    vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_007', isDraft: false,
+  },
+  {
+    id: 'evt_008', title: 'Burnley FC vs Hull City',
+    description: 'EFL Championship matchday at Turf Moor',
+    status: 'ended', channelState: 'idle', includeMatchDetails: true,
+    homeTeam: 'Burnley FC', awayTeam: 'Hull City', competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',
+    event_start_time: seedISO(-13, 14, 30), kickoff_time: seedISO(-13, 15, 0), event_end_time: seedISO(-13, 17, 0),
+    opta_id: '', external_id: '', visibility: 'visible',
+    image_16x9: null, currentViewers: 0, peakViewers: 8210,
+    streams: seedStreams('preset_srt_video'),
+    vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_008', isDraft: false,
+  },
+  {
+    id: 'evt_009', title: 'Burnley FC vs Oxford United',
+    description: 'EFL Championship matchday at Turf Moor',
+    status: 'ended', channelState: 'idle', includeMatchDetails: true,
+    homeTeam: 'Burnley FC', awayTeam: 'Oxford United', competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',
+    event_start_time: seedISO(-20, 14, 30), kickoff_time: seedISO(-20, 15, 0), event_end_time: seedISO(-20, 17, 0),
+    opta_id: '', external_id: '', visibility: 'visible',
+    image_16x9: null, currentViewers: 0, peakViewers: 6890,
+    streams: seedStreams('preset_srt_video'),
+    vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_009', isDraft: false,
+  },
+  {
+    id: 'evt_010', title: 'Burnley FC vs Leeds United',
+    description: 'EFL Championship — top-of-the-table clash',
+    status: 'upcoming', channelState: 'idle', includeMatchDetails: true,
+    homeTeam: 'Burnley FC', awayTeam: 'Leeds United', competition: 'EFL Championship', round: 'Regular Season', venue: 'Turf Moor',
+    event_start_time: seedISO(7, 14, 30), kickoff_time: seedISO(7, 15, 0), event_end_time: seedISO(7, 17, 0),
+    opta_id: '', external_id: '', visibility: 'visible',
+    image_16x9: null, currentViewers: 0, peakViewers: 0,
+    streams: seedStreams('preset_stadium_hd'),
+    vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_010', isDraft: false,
+  },
+  {
+    id: 'evt_011', title: 'Sunderland vs Burnley FC',
+    description: 'EFL Championship away fixture',
+    status: 'upcoming', channelState: 'idle', includeMatchDetails: true,
+    homeTeam: 'Sunderland', awayTeam: 'Burnley FC', competition: 'EFL Championship', round: 'Regular Season', venue: 'Stadium of Light',
+    event_start_time: seedISO(12, 12, 0), kickoff_time: seedISO(12, 12, 30), event_end_time: seedISO(12, 14, 30),
+    opta_id: '', external_id: '', visibility: 'visible',
+    image_16x9: null, currentViewers: 0, peakViewers: 0,
+    streams: seedStreams('preset_srt_video'),
+    vip_delivery: { enabled: false }, apiUrl: 'https://api.example.com/v1/events/evt_011', isDraft: false,
   },
 ];
 
@@ -542,56 +754,30 @@ function RightsPanel({ rights, onChange }: { rights: StreamRights; onChange: (r:
   );
 }
 
-function StreamRowCard({ row, index, onUpdate, onRemove, allStreams, vipEnabled, onVipEnabledChange, vipRosterCount }: {
+function StreamRowCard({ row, index, onUpdate, onRemove }: {
   row: StreamRow; index: number; onUpdate: (r: StreamRow) => void; onRemove: () => void;
-  allStreams: StreamRow[]; vipEnabled: boolean; onVipEnabledChange: (enabled: boolean) => void; vipRosterCount: number;
 }) {
-  const broadcast = CLIENT_BROADCASTS.find(b => b.broadcast_id === row.broadcast_id);
-  const template  = STREAM_TEMPLATES.find(t => t.template_id === row.stream_template_id);
-  const isConfigured = !!row.broadcast_id && !!row.stream_template_id;
   const hasRights = !!row.rights.geo_profile || row.rights.geo_countries.length > 0 || row.rights.subscription_plans.length > 0 || row.rights.segment_ids.length > 0;
-
-  const isFirstVideoForBroadcast = useMemo(() => {
-    if (!row.broadcast_id || !template || template.icon !== 'video') return false;
-    const videoStreamsForBroadcast = allStreams.filter(s => {
-      const t = STREAM_TEMPLATES.find(st => st.template_id === s.stream_template_id);
-      return s.broadcast_id === row.broadcast_id && t && t.icon === 'video';
-    });
-    return videoStreamsForBroadcast.length > 0 && videoStreamsForBroadcast[0].id === row.id;
-  }, [row.id, row.broadcast_id, template, allStreams]);
-
-  const isFirstVideoOverall = useMemo(() => {
-    if (!template || template.icon !== 'video' || !row.broadcast_id) return false;
-    const firstVideo = allStreams.find(s => {
-      const t = STREAM_TEMPLATES.find(st => st.template_id === s.stream_template_id);
-      return s.broadcast_id && t && t.icon === 'video';
-    });
-    return firstVideo?.id === row.id;
-  }, [row.id, template, row.broadcast_id, allStreams]);
+  const si = STREAM_ICONS.find(s => s.id === row.output.type);
+  const OutputIcon = si ? si.Icon : Video;
+  const inp = row.input;
 
   return (
-    <div className={`rounded-xl border-2 overflow-hidden transition-all ${isConfigured ? 'border-emerald-300 bg-white shadow-sm' : 'border-slate-200 bg-white'}`}>
+    <div className="rounded-xl border-2 border-emerald-300 bg-white shadow-sm overflow-hidden transition-all">
       <div className="px-5 py-4">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2.5 flex-1 min-w-0">
-            <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 ${isConfigured ? 'bg-emerald-600 text-white' : 'bg-slate-200 text-slate-500'}`}>
-              {isConfigured ? <Check size={12} /> : index + 1}
-            </span>
-            <div className="relative flex-shrink-0">
-              <select value={row.icon} onChange={e => onUpdate({ ...row, icon: e.target.value })}
-                className="appearance-none w-9 h-9 rounded-lg border border-slate-200 bg-slate-50 hover:bg-slate-100 cursor-pointer text-center text-transparent focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none" title="Stream icon">
-                {STREAM_ICONS.map(si => <option key={si.id} value={si.id}>{si.label}</option>)}
-              </select>
-              <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                {(() => { const si = STREAM_ICONS.find(s => s.id === row.icon); const IconComp = si ? si.Icon : Video; return <IconComp size={16} className="text-slate-600" />; })()}
-              </div>
+            <span className="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 bg-emerald-600 text-white">{index + 1}</span>
+            <div className="w-9 h-9 rounded-lg border border-slate-200 bg-slate-50 flex items-center justify-center flex-shrink-0">
+              <OutputIcon size={16} className="text-slate-600" />
             </div>
-            <div className="relative flex-1 min-w-0 max-w-56">
-              <input type="text" value={row.title} onChange={e => onUpdate({ ...row, title: e.target.value })}
-                className="w-full text-sm font-semibold text-slate-900 bg-white border border-slate-300 rounded-lg pl-3 pr-8 py-1.5 hover:border-emerald-400 focus:border-emerald-500 focus:ring-2 focus:ring-emerald-200 focus:outline-none transition-colors"
-                placeholder="Enter stream name..." />
-              <Edit3 size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+            <div className="min-w-0">
+              <p className="text-sm font-semibold text-slate-900 truncate">{row.output.name}</p>
+              <p className="text-[10px] text-slate-400 truncate">{row.preset_name}</p>
             </div>
+            {row.live2vod && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 flex items-center gap-1 flex-shrink-0"><Archive size={9} /> Live2VOD</span>}
+            {row.captions && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 flex items-center gap-1 flex-shrink-0"><Captions size={9} /> Captions</span>}
+            {row.vip && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-fuchsia-100 text-fuchsia-700 flex items-center gap-1 flex-shrink-0"><Crown size={9} /> VIP</span>}
             {hasRights && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 flex-shrink-0">Rights set</span>}
           </div>
           <button onClick={onRemove} className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors flex-shrink-0 ml-2" title="Remove stream">
@@ -600,105 +786,150 @@ function StreamRowCard({ row, index, onUpdate, onRemove, allStreams, vipEnabled,
         </div>
 
         <div className="grid grid-cols-2 gap-3">
+          {/* Input source (from preset, read-only) */}
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Broadcast Input</label>
-            <select value={row.broadcast_id} onChange={e => onUpdate({ ...row, broadcast_id: e.target.value })}
-              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm">
-              <option value="">Select broadcast...</option>
-              {CLIENT_BROADCASTS.map(b => (
-                <option key={b.broadcast_id} value={b.broadcast_id} disabled={b.status === 'IN_USE' || b.status === 'INACTIVE'}>
-                  {b.broadcast_name} ({b.protocol_label}){b.status === 'IN_USE' ? ' – In Use' : ''}
-                </option>
-              ))}
-            </select>
-            {broadcast && (
-              <div className="mt-2 space-y-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${INPUT_TYPE_COLORS[broadcast.input_type]}`}>{broadcast.protocol_label}</span>
-                  <span className="text-[10px] text-slate-500">{broadcast.description}</span>
-                </div>
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-1">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[10px] font-semibold text-slate-500 uppercase w-14 flex-shrink-0">Endpoint</span>
-                    <code className="text-[10px] text-slate-700 font-mono bg-slate-100 px-1.5 py-0.5 rounded break-all">{broadcast.endpoint_url}</code>
-                  </div>
-                  {broadcast.endpoint_port && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-semibold text-slate-500 uppercase w-14 flex-shrink-0">Port</span>
-                      <code className="text-[10px] text-slate-700 font-mono bg-slate-100 px-1.5 py-0.5 rounded">{broadcast.endpoint_port}</code>
-                    </div>
-                  )}
-                  {broadcast.stream_key && (
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-[10px] font-semibold text-slate-500 uppercase w-14 flex-shrink-0">Key</span>
-                      <code className="text-[10px] text-slate-700 font-mono bg-slate-100 px-1.5 py-0.5 rounded">{broadcast.stream_key}</code>
-                    </div>
-                  )}
-                </div>
+            <div className="mb-1.5"><span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${INPUT_TYPE_COLORS[inp.input_type]}`}>{inp.protocol_label}</span></div>
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-2.5 space-y-1">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-semibold text-slate-500 uppercase w-14 flex-shrink-0">Endpoint</span>
+                <code className="text-[10px] text-slate-700 font-mono bg-slate-100 px-1.5 py-0.5 rounded break-all">{inp.endpoint_url}</code>
               </div>
-            )}
+              {inp.endpoint_port && (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold text-slate-500 uppercase w-14 flex-shrink-0">Port</span>
+                  <code className="text-[10px] text-slate-700 font-mono bg-slate-100 px-1.5 py-0.5 rounded">{inp.endpoint_port}</code>
+                </div>
+              )}
+              {inp.stream_key && (
+                <div className="flex items-center gap-1.5">
+                  <span className="text-[10px] font-semibold text-slate-500 uppercase w-14 flex-shrink-0">Key</span>
+                  <code className="text-[10px] text-slate-700 font-mono bg-slate-100 px-1.5 py-0.5 rounded">{inp.stream_key}</code>
+                </div>
+              )}
+            </div>
           </div>
 
+          {/* Output (from preset, read-only) */}
           <div>
             <label className="block text-xs font-medium text-slate-500 mb-1">Stream Output</label>
-            <select value={row.stream_template_id} onChange={e => onUpdate({ ...row, stream_template_id: e.target.value })}
-              className="w-full px-3 py-2.5 border border-slate-300 rounded-lg bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm">
-              <option value="">Select stream template...</option>
-              {STREAM_TEMPLATES.map(t => <option key={t.template_id} value={t.template_id}>{t.display_name} – {t.cdn_destination}</option>)}
-            </select>
-            {template && (
-              <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
-                {template.specs.map((s, i) => <span key={i} className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600">{s}</span>)}
+            <p className="text-sm font-medium text-slate-900">{row.output.name}</p>
+            <div className="flex items-center gap-1.5 mt-1.5 flex-wrap">
+              <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600">{row.output.codec}</span>
+              {row.output.resolution && row.output.resolution !== '—' && <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600">{row.output.resolution}</span>}
+              {row.output.bitrate !== '—' && <span className="text-[10px] font-medium px-2 py-0.5 rounded bg-slate-100 text-slate-600">{row.output.bitrate}</span>}
+            </div>
+            {row.live2vod && (
+              <div className="mt-3 flex items-start gap-2.5 p-2.5 rounded-lg border border-amber-200 bg-amber-50">
+                <Archive size={12} className="text-amber-600 mt-0.5 flex-shrink-0" />
+                <div>
+                  <span className="text-xs font-semibold text-slate-800">Live2VOD enabled</span>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Archived to S3 for on-demand replay (preset extra).</p>
+                </div>
               </div>
             )}
-
-            {isFirstVideoForBroadcast && (
-              <label className="flex items-start gap-2.5 mt-3 p-2.5 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer hover:border-emerald-300 transition-colors">
-                <input type="checkbox" checked={row.live2vod} onChange={e => onUpdate({ ...row, live2vod: e.target.checked })}
-                  className="mt-0.5 w-4 h-4 rounded border-slate-300 text-emerald-600 focus:ring-emerald-200" />
+            {row.captions && (
+              <div className="mt-3 flex items-start gap-2.5 p-2.5 rounded-lg border border-blue-200 bg-blue-50">
+                <Captions size={12} className="text-blue-600 mt-0.5 flex-shrink-0" />
                 <div>
-                  <span className="text-xs font-semibold text-slate-800 flex items-center gap-1.5"><Archive size={12} className="text-amber-600" />Enable Live2VOD</span>
-                  <p className="text-[10px] text-slate-500 mt-0.5">{LIVE2VOD_SPEC.description} – {LIVE2VOD_SPEC.specs[1]} – {LIVE2VOD_SPEC.cdn_destination}</p>
+                  <span className="text-xs font-semibold text-slate-800">Live Captions — ENG</span>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Live English subtitles burned to the stream (preset extra).</p>
                 </div>
-              </label>
+              </div>
             )}
-
-            {isFirstVideoOverall && (
-              <label className="flex items-start gap-2.5 mt-3 p-2.5 rounded-lg border border-slate-200 bg-slate-50 cursor-pointer hover:border-amber-300 transition-colors">
-                <input type="checkbox" checked={vipEnabled} onChange={e => onVipEnabledChange(e.target.checked)}
-                  className="mt-0.5 w-4 h-4 rounded border-slate-300 text-amber-600 focus:ring-amber-200" />
+            {row.vip && (
+              <div className="mt-3 flex items-start gap-2.5 p-2.5 rounded-lg border border-fuchsia-200 bg-fuchsia-50">
+                <Crown size={12} className="text-fuchsia-600 mt-0.5 flex-shrink-0" />
                 <div>
-                  <span className="text-xs font-semibold text-slate-800 flex items-center gap-1.5"><Crown size={12} className="text-amber-600" />Enable VIP delivery</span>
-                  <p className="text-[10px] text-slate-500 mt-0.5">
-                    Mirror all video streams to the {vipRosterCount}-member VIP roster. Delivery details configured in <strong>VIP Members</strong>.
-                  </p>
+                  <span className="text-xs font-semibold text-slate-800">VIP delivery</span>
+                  <p className="text-[10px] text-slate-500 mt-0.5">Mirrored to the VIP roster (preset extra). Manage in <strong>VIP Members</strong>.</p>
                 </div>
-              </label>
+              </div>
             )}
           </div>
         </div>
       </div>
 
-      {isConfigured && (
-        <div className="border-t border-slate-200">
-          <button onClick={() => onUpdate({ ...row, expanded: !row.expanded })}
-            className={`w-full px-5 py-3 flex items-center justify-between transition-colors ${row.expanded ? 'bg-violet-50' : hasRights ? 'bg-violet-50 hover:bg-violet-100' : 'bg-slate-50 hover:bg-slate-100'}`}>
-            <div className="flex items-center gap-2.5">
-              <Shield size={16} className={hasRights ? 'text-violet-600' : 'text-slate-400'} />
-              <span className={`text-sm font-semibold ${hasRights ? 'text-violet-800' : 'text-slate-600'}`}>Rights &amp; Restrictions</span>
-              {hasRights ? (
-                <div className="flex items-center gap-2">
-                  {row.rights.geo_profile && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-violet-200 text-violet-800 flex items-center gap-1"><Globe size={9} />{row.rights.geo_profile}</span>}
-                  {row.rights.geo_countries.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700 flex items-center gap-1"><MapPin size={9} />{row.rights.geo_countries.length} blocked</span>}
-                  {row.rights.subscription_plans.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-violet-200 text-violet-800 flex items-center gap-1"><CreditCard size={9} />{row.rights.subscription_plans.length} plan{row.rights.subscription_plans.length > 1 ? 's' : ''}</span>}
-                  {row.rights.segment_ids.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 flex items-center gap-1"><Users size={9} />{row.rights.segment_ids.length} segment{row.rights.segment_ids.length > 1 ? 's' : ''}</span>}
-                  {row.rights.subscription_plans.length > 0 && row.rights.segment_ids.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">{row.rights.combine_mode}</span>}
-                </div>
-              ) : <span className="text-[10px] text-slate-400">Not configured</span>}
+      <div className="border-t border-slate-200">
+        <button onClick={() => onUpdate({ ...row, expanded: !row.expanded })}
+          className={`w-full px-5 py-3 flex items-center justify-between transition-colors ${row.expanded ? 'bg-violet-50' : hasRights ? 'bg-violet-50 hover:bg-violet-100' : 'bg-slate-50 hover:bg-slate-100'}`}>
+          <div className="flex items-center gap-2.5">
+            <Shield size={16} className={hasRights ? 'text-violet-600' : 'text-slate-400'} />
+            <span className={`text-sm font-semibold ${hasRights ? 'text-violet-800' : 'text-slate-600'}`}>Rights &amp; Restrictions</span>
+            {hasRights ? (
+              <div className="flex items-center gap-2">
+                {row.rights.geo_profile && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-violet-200 text-violet-800 flex items-center gap-1"><Globe size={9} />{row.rights.geo_profile}</span>}
+                {row.rights.geo_countries.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-red-100 text-red-700 flex items-center gap-1"><MapPin size={9} />{row.rights.geo_countries.length} blocked</span>}
+                {row.rights.subscription_plans.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-violet-200 text-violet-800 flex items-center gap-1"><CreditCard size={9} />{row.rights.subscription_plans.length} plan{row.rights.subscription_plans.length > 1 ? 's' : ''}</span>}
+                {row.rights.segment_ids.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-sky-100 text-sky-800 flex items-center gap-1"><Users size={9} />{row.rights.segment_ids.length} segment{row.rights.segment_ids.length > 1 ? 's' : ''}</span>}
+                {row.rights.subscription_plans.length > 0 && row.rights.segment_ids.length > 0 && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-slate-200 text-slate-700">{row.rights.combine_mode}</span>}
+              </div>
+            ) : <span className="text-[10px] text-slate-400">Not configured</span>}
+          </div>
+          {row.expanded ? <ChevronUp size={16} className="text-violet-500" /> : <ChevronDown size={16} className="text-slate-400" />}
+        </button>
+        {row.expanded && <RightsPanel rights={row.rights} onChange={r => onUpdate({ ...row, rights: r })} />}
+      </div>
+    </div>
+  );
+}
+
+// ─── PRESET PICKER (wizard: choose a Broadcast Preset → generate streams) ─────
+function PresetPicker({ onConfirm }: { onConfirm: (preset: BroadcastPreset) => void }) {
+  const [selectedId, setSelectedId] = useState('');
+  const preset = BROADCAST_PRESETS.find(p => p.preset_id === selectedId) || null;
+
+  return (
+    <div className="border-2 border-dashed border-slate-300 rounded-xl p-4 bg-slate-50/60">
+      <label className="block text-sm font-medium text-slate-700 mb-1.5">Broadcast Preset</label>
+      <div className="flex gap-2">
+        <select value={selectedId} onChange={e => setSelectedId(e.target.value)}
+          className="flex-1 px-3.5 py-2.5 border border-slate-300 rounded-lg bg-white focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm">
+          <option value="">Select a preset…</option>
+          {BROADCAST_PRESETS.map(p => (
+            <option key={p.preset_id} value={p.preset_id} disabled={p.status === 'IN_USE'}>
+              {p.name} · {p.outputs.length} output{p.outputs.length !== 1 ? 's' : ''}{p.status === 'IN_USE' ? ' — In Use' : ''}
+            </option>
+          ))}
+        </select>
+        <button type="button" onClick={() => preset && onConfirm(preset)} disabled={!preset}
+          className="px-4 py-2.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:bg-slate-300 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-1.5">
+          <Check size={14} /> Confirm
+        </button>
+      </div>
+
+      {preset && (
+        <div className="mt-3 bg-white border border-slate-200 rounded-lg p-3 space-y-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className={`text-[10px] font-medium px-2 py-0.5 rounded-full ${INPUT_TYPE_COLORS[preset.input.input_type]}`}>{preset.input.protocol_label}</span>
+              <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${preset.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{preset.status === 'ACTIVE' ? 'Active' : 'In use'}</span>
+              {preset.extras.live2vod && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 flex items-center gap-1"><Archive size={9} /> Live2VOD</span>}
+              {preset.extras.vip && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-800 flex items-center gap-1 border border-amber-300"><Crown size={9} /> VIP</span>}
             </div>
-            {row.expanded ? <ChevronUp size={16} className="text-violet-500" /> : <ChevronDown size={16} className="text-slate-400" />}
-          </button>
-          {row.expanded && <RightsPanel rights={row.rights} onChange={r => onUpdate({ ...row, rights: r })} />}
+            <span className="text-[10px] text-slate-400">{preset.outputs.length} output{preset.outputs.length !== 1 ? 's' : ''} → {preset.outputs.length} live stream{preset.outputs.length !== 1 ? 's' : ''}</span>
+          </div>
+          {/* Input source in-line */}
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+            <span className="font-semibold text-slate-500 uppercase">Input</span>
+            <code className="text-slate-700 font-mono bg-slate-100 px-1.5 py-0.5 rounded break-all">{preset.input.endpoint_url}</code>
+            {preset.input.endpoint_port && <span className="text-slate-500">Port <code className="font-mono text-slate-700">{preset.input.endpoint_port}</code></span>}
+            {preset.input.stream_key && <span className="text-slate-500">Key <code className="font-mono text-slate-700">{preset.input.stream_key}</code></span>}
+          </div>
+          {/* Outputs list */}
+          <div className="space-y-1.5">
+            {preset.outputs.map((o, i) => {
+              const oi = STREAM_ICONS.find(s => s.id === o.type);
+              const OIcon = oi ? oi.Icon : Video;
+              return (
+                <div key={i} className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-md px-2.5 py-1.5">
+                  <OIcon size={13} className="text-slate-500 flex-shrink-0" />
+                  <span className="text-xs font-medium text-slate-800">{o.name}</span>
+                  <span className="text-[10px] text-slate-500">{o.codec}{o.resolution !== '—' ? ` · ${o.resolution}` : ''}{o.bitrate !== '—' ? ` · ${o.bitrate}` : ''}</span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
@@ -706,25 +937,137 @@ function StreamRowCard({ row, index, onUpdate, onRemove, allStreams, vipEnabled,
 }
 
 
+// ─── OPTA LOOKUP FIELD ───────────────────────────────────────────────────────
+function OptaLookupField({ optaId, onOptaIdChange, onMatchApplied, enableResync, lastPulledAt, onResyncCompared }: {
+  optaId: string; onOptaIdChange: (id: string) => void; onMatchApplied: (fixture: CatalogFixture) => void;
+  enableResync?: boolean; lastPulledAt?: string; onResyncCompared?: (fixture: CatalogFixture) => void;
+}) {
+  const [mode, setMode]       = useState<LookupMode>('id');
+  const [state, setState]     = useState<LookupState>('idle');
+  const [matched, setMatched] = useState<CatalogFixture | null>(null);
+  const [search, setSearch]   = useState('');
+
+  const searchResults = search.trim()
+    ? FIXTURE_CATALOG.filter(f => {
+        const q = search.toLowerCase();
+        return f.home_team.toLowerCase().includes(q) || f.away_team.toLowerCase().includes(q) ||
+               f.competition.toLowerCase().includes(q) || f.opta_id.toLowerCase().includes(q);
+      }).slice(0, 6)
+    : [];
+
+  const triggerIdLookup = () => {
+    setState('searching'); setMatched(null);
+    setTimeout(() => {
+      const found = lookupFixture(optaId, 'id');
+      if (found) { setMatched(found); setState('matched'); } else { setState('not_found'); }
+    }, 350);
+  };
+
+  const stateChipClass: Record<LookupState, string> = { idle: 'bg-slate-100 text-slate-500', searching: 'bg-blue-100 text-blue-700', matched: 'bg-emerald-100 text-emerald-700', not_found: 'bg-red-100 text-red-700' };
+  const stateChipLabel: Record<LookupState, string> = { idle: 'Idle', searching: 'Searching…', matched: 'Matched', not_found: 'Not found' };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between">
+        <label className="text-sm font-medium text-slate-700">Opta Fixture ID</label>
+        <div className="inline-flex rounded-md border border-slate-200 bg-slate-50 p-0.5 text-[11px]">
+          <button type="button" onClick={() => setMode('id')} className={`px-2.5 py-1 rounded ${mode === 'id' ? 'bg-white border border-slate-300 text-slate-900 font-medium' : 'text-slate-500'}`}>Enter ID</button>
+          <button type="button" onClick={() => setMode('search')} className={`px-2.5 py-1 rounded ${mode === 'search' ? 'bg-white border border-slate-300 text-slate-900 font-medium' : 'text-slate-500'}`}>Search fixture</button>
+        </div>
+      </div>
+
+      {mode === 'id' ? (
+        <div className="flex gap-2">
+          <input type="text" value={optaId} onChange={e => { onOptaIdChange(e.target.value); setState('idle'); setMatched(null); }}
+            placeholder="e.g. g2412345"
+            className="flex-1 px-3.5 py-2.5 border border-slate-300 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm font-mono" />
+          <button type="button" onClick={triggerIdLookup} disabled={!optaId.trim() || state === 'searching'}
+            className="px-3.5 py-2.5 bg-slate-900 text-white rounded-lg hover:bg-slate-800 disabled:bg-slate-300 disabled:cursor-not-allowed text-sm font-medium flex items-center gap-1.5">
+            <Search size={14} /> Lookup
+          </button>
+          {state !== 'idle' && <span className={`px-2 py-1 rounded-md text-[10px] font-medium self-center ${stateChipClass[state]}`}>{stateChipLabel[state]}</span>}
+        </div>
+      ) : (
+        <div className="relative">
+          <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Search by team, competition, or ID..."
+            className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm" />
+          {searchResults.length > 0 && (
+            <div className="absolute z-20 w-full mt-1 bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-y-auto">
+              {searchResults.map(f => (
+                <button key={f.opta_id} type="button"
+                  onClick={() => { onOptaIdChange(f.opta_id); setMatched(f); setState('matched'); setSearch(''); }}
+                  className="w-full px-3.5 py-2 text-left hover:bg-slate-50 text-sm border-b border-slate-100 last:border-b-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="font-medium text-slate-900">{f.home_team} v {f.away_team}</span>
+                    <code className="text-[10px] text-slate-400 font-mono">{f.opta_id}</code>
+                  </div>
+                  <div className="text-[11px] text-slate-500 mt-0.5">
+                    {f.competition} · {new Date(f.kickoff_iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })} · {f.venue}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {matched && (
+        <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 flex items-start gap-2.5">
+          <Check size={14} className="text-emerald-600 mt-0.5 flex-shrink-0" />
+          <div className="flex-1 text-xs">
+            <p className="font-semibold text-emerald-900">{matched.home_team} v {matched.away_team}</p>
+            <p className="text-emerald-700 mt-0.5">
+              {matched.competition} · {new Date(matched.kickoff_iso).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit', timeZoneName: 'short' })} · {matched.venue}
+            </p>
+          </div>
+          <button type="button" onClick={() => { onMatchApplied(matched); setMatched(null); setState('idle'); }}
+            className="px-3 py-1.5 bg-emerald-600 text-white rounded-md hover:bg-emerald-700 text-[11px] font-medium flex-shrink-0">
+            Apply to form
+          </button>
+        </div>
+      )}
+
+      {state === 'not_found' && !matched && (
+        <p className="text-[11px] text-red-700 flex items-center gap-1.5"><AlertCircle size={11} /> No fixture matched that Opta ID in the {initialStatsFeedSettings.provider.toUpperCase()} catalog.</p>
+      )}
+
+      {enableResync && optaId && (
+        <div className="flex items-center justify-between pt-1">
+          <p className="text-[10px] text-slate-400">
+            {lastPulledAt ? `Last synced ${new Date(lastPulledAt).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' })}` : 'Not yet synced'}
+          </p>
+          <button type="button" onClick={() => { const found = lookupFixture(optaId, 'id'); if (found) onResyncCompared?.(found); }}
+            className="px-2.5 py-1 text-[10px] font-medium text-violet-700 bg-violet-50 border border-violet-200 rounded-md hover:bg-violet-100 flex items-center gap-1">
+            <RefreshCw size={10} /> Update from Opta
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── CREATE EVENT PAGE ───────────────────────────────────────────────────────
 
 interface CreateEventForm {
   event_name: string; description: string; event_date: string; event_start_time: string; kickoff_time: string; event_end_time: string;
+  opta_id: string; external_id: string;
   image_16x9: { name: string; url: string } | null;
-  home_team: string; away_team: string; competition: string; venue: string;
+  home_team: string; away_team: string; competition: string; round: string; venue: string;
 }
 
-function CreateEventPage({ onBack, onSave, tenantId, rosterCount }: {
-  onBack: () => void; onSave: (e: LiveEvent) => void; tenantId: string; rosterCount: number;
+function CreateEventPage({ onBack, onSave, tenantId }: {
+  onBack: () => void; onSave: (e: LiveEvent) => void; tenantId: string;
 }) {
   const [form, setForm] = useState<CreateEventForm>({
     event_name: '', description: '', event_date: '', event_start_time: '', kickoff_time: '', event_end_time: '',
+    opta_id: '', external_id: '',
     image_16x9: null,
-    home_team: '', away_team: '', competition: '', venue: '',
+    home_team: '', away_team: '', competition: '', round: '', venue: '',
   });
   const [includeMatchDetails, setIncludeMatchDetails] = useState(false);
   const [streams, setStreams]       = useState<StreamRow[]>([]);
-  const [vipEnabled, setVipEnabled] = useState(false);
+  const [sourceMatch, setSourceMatch] = useState<SourceMatch | null>(null);
 
   const updateForm = (u: Partial<CreateEventForm>) => setForm(p => ({ ...p, ...u }));
   const handleImageUpload = (key: 'image_16x9') => (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -732,39 +1075,45 @@ function CreateEventPage({ onBack, onSave, tenantId, rosterCount }: {
     if (f) updateForm({ [key]: { name: f.name, url: URL.createObjectURL(f) } } as Partial<CreateEventForm>);
   };
 
-  const addStream    = () => setStreams(p => [...p, createStreamRow({ title: `Stream ${p.length + 1}` })]);
+  const applyPreset  = (preset: BroadcastPreset) => setStreams(streamsFromPreset(preset));
   const removeStream = (id: string) => setStreams(p => p.filter(s => s.id !== id));
   const updateStream = (id: string, row: StreamRow) => setStreams(p => p.map(s => s.id === id ? row : s));
 
-  const configuredStreams = streams.filter(s => s.broadcast_id && s.stream_template_id);
+  const hasVideoStream = streams.some(s => s.output.type === 'video');
+  const vipOn = hasVideoStream && streams.some(s => s.vip);
   const formValid = useMemo(() => {
-    const base = !!form.event_name && !!form.event_date && !!form.event_start_time && !!form.kickoff_time && configuredStreams.length > 0;
+    const base = !!form.event_name && !!form.event_date && !!form.event_start_time && !!form.kickoff_time;
     if (includeMatchDetails) return base && !!form.home_team && !!form.away_team;
     return base;
-  }, [form, includeMatchDetails, configuredStreams.length]);
+  }, [form, includeMatchDetails]);
 
   const handleSave = () => {
     const id = `evt_${Date.now()}`;
     onSave({
-      id, title: form.event_name, description: form.description, status: 'upcoming', channelState: 'idle',
+      id, title: form.event_name, description: form.description,
+      status: streams.length > 0 ? 'upcoming' : 'draft', channelState: 'idle',
       includeMatchDetails,
       homeTeam:    includeMatchDetails ? form.home_team   : '',
       awayTeam:    includeMatchDetails ? form.away_team   : '',
       competition: includeMatchDetails ? form.competition : '',
+      round:       includeMatchDetails ? form.round       : '',
       venue:       includeMatchDetails ? form.venue       : '',
       event_start_time: `${form.event_date}T${form.event_start_time}:00`,
       kickoff_time:     `${form.event_date}T${form.kickoff_time}:00`,
       event_end_time:   form.event_end_time ? `${form.event_date}T${form.event_end_time}:00` : '',
+      opta_id: form.opta_id, external_id: form.external_id,
+      source_match: sourceMatch || undefined,
+      visibility: 'visible',
       image_16x9: form.image_16x9,
       currentViewers: 0, peakViewers: 0,
-      streams: configuredStreams,
+      streams,
       vip_delivery: {
-        enabled: vipEnabled,
-        hosted_page_url:     vipEnabled ? `https://vip.yinzcam.com/${tenantId}/${id}` : undefined,
-        distribution_status: vipEnabled ? 'pending' : undefined,
+        enabled: vipOn,
+        hosted_page_url:     vipOn ? `https://vip.yinzcam.com/${tenantId}/${id}` : undefined,
+        distribution_status: vipOn ? 'pending' : undefined,
       },
       apiUrl: `https://api.example.com/v1/events/${id}`,
-      isDraft: false,
+      isDraft: streams.length === 0,
     });
   };
 
@@ -854,10 +1203,40 @@ function CreateEventPage({ onBack, onSave, tenantId, rosterCount }: {
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <AutocompleteInput label="Competition" value={form.competition} onChange={v => updateForm({ competition: v })} options={COMPETITIONS} placeholder="e.g. EFL Championship" />
+                    <AutocompleteInput label="Round" value={form.round} onChange={v => updateForm({ round: v })} options={ROUNDS} placeholder="e.g. Quarter-final" />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
                     <AutocompleteInput label="Venue" value={form.venue} onChange={v => updateForm({ venue: v })} options={VENUES} placeholder="e.g. Turf Moor" />
+                    <div>
+                      <label className="block text-sm font-medium text-slate-700 mb-1.5">Data ID</label>
+                      <div className="w-full px-3.5 py-2.5 border border-slate-200 rounded-lg bg-slate-50 text-sm font-mono flex items-center min-h-[42px]">
+                        {form.opta_id ? <span className="text-slate-700">{form.opta_id}</span> : <span className="text-slate-400">Not linked</span>}
+                      </div>
+                      <p className="text-[10px] text-slate-400 mt-1">From Data Integration (Opta or similar)</p>
+                    </div>
                   </div>
                 </div>
               )}
+              <div className="pt-4 border-t border-slate-100">
+                <h3 className="text-sm font-semibold text-slate-800 mb-3">Data Integration</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <OptaLookupField optaId={form.opta_id} onOptaIdChange={id => updateForm({ opta_id: id })}
+                    onMatchApplied={f => {
+                      const ko = new Date(f.kickoff_iso);
+                      updateForm({ opta_id: f.opta_id, home_team: f.home_team, away_team: f.away_team, competition: f.competition, round: f.round, venue: f.venue,
+                        event_date:   `${ko.getUTCFullYear()}-${String(ko.getUTCMonth()+1).padStart(2,'0')}-${String(ko.getUTCDate()).padStart(2,'0')}`,
+                        kickoff_time: `${String(ko.getUTCHours()).padStart(2,'0')}:${String(ko.getUTCMinutes()).padStart(2,'0')}`,
+                      });
+                      setIncludeMatchDetails(true);
+                      setSourceMatch({ provider: initialStatsFeedSettings.provider, source_id: f.opta_id, pulled_at: new Date().toISOString(), raw_snapshot: { home_team: f.home_team, away_team: f.away_team, competition: f.competition, venue: f.venue, kickoff_iso: f.kickoff_iso } });
+                    }} />
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">External Reference</label>
+                    <input type="text" value={form.external_id} onChange={e => updateForm({ external_id: e.target.value })}
+                      placeholder="Optional third-party ref" className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm font-mono" />
+                  </div>
+                </div>
+              </div>
             </div>
 
             <div className="bg-white rounded-xl border border-slate-200 p-6">
@@ -869,20 +1248,15 @@ function CreateEventPage({ onBack, onSave, tenantId, rosterCount }: {
             <div className="bg-white rounded-xl border border-slate-200 p-6">
               <div className="flex items-center justify-between mb-1">
                 <h2 className="text-base font-bold text-slate-900">Streams</h2>
-                <button onClick={addStream} className="px-3.5 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 text-sm font-medium flex items-center gap-1.5"><Plus size={14} />Add Stream</button>
+                {streams.length > 0 && <button onClick={() => setStreams([])} className="text-xs font-medium text-slate-500 hover:text-slate-800 flex items-center gap-1"><RefreshCw size={12} /> Change preset</button>}
               </div>
-              <p className="text-xs text-slate-500 mb-5">Each stream pairs a broadcast input with an output template.</p>
+              <p className="text-xs text-slate-500 mb-5">Pick a Broadcast Preset — its outputs become Live Streams ready for Rights &amp; Restrictions. No preset → saved as a Draft.</p>
               {streams.length === 0 ? (
-                <button onClick={addStream} className="w-full py-10 border-2 border-dashed border-slate-300 rounded-xl hover:border-emerald-500 hover:bg-emerald-50 transition-all flex flex-col items-center gap-2 cursor-pointer">
-                  <Plus size={24} className="text-slate-400" />
-                  <span className="text-sm font-medium text-slate-600">Add your first stream</span>
-                  <span className="text-xs text-slate-400">Pair a broadcast input with an output template</span>
-                </button>
+                <PresetPicker onConfirm={applyPreset} />
               ) : (
                 <div className="space-y-3">
                   {streams.map((row, i) => (
-                    <StreamRowCard key={row.id} row={row} index={i} onUpdate={r => updateStream(row.id, r)} onRemove={() => removeStream(row.id)}
-                      allStreams={streams} vipEnabled={vipEnabled} onVipEnabledChange={setVipEnabled} vipRosterCount={rosterCount} />
+                    <StreamRowCard key={row.id} row={row} index={i} onUpdate={r => updateStream(row.id, r)} onRemove={() => removeStream(row.id)} />
                   ))}
                 </div>
               )}
@@ -898,13 +1272,16 @@ function CreateEventPage({ onBack, onSave, tenantId, rosterCount }: {
                   { done: !!form.event_date, label: 'Event date' },
                   { done: !!form.event_start_time && !!form.kickoff_time, label: 'Event start & kick-off times' },
                   ...(includeMatchDetails ? [{ done: !!form.home_team, label: 'Home team' }, { done: !!form.away_team, label: 'Away team' }] : []),
-                  { done: configuredStreams.length > 0, label: 'At least one configured stream' },
                 ].map((item, i) => (
                   <div key={i} className="flex items-center gap-2">
                     <div className={`w-4 h-4 rounded-full flex items-center justify-center ${item.done ? 'bg-emerald-500' : 'border-2 border-slate-300'}`}>{item.done && <Check size={10} className="text-white" />}</div>
                     <span className={`text-xs ${item.done ? 'text-slate-700' : 'text-slate-400'}`}>{item.label}</span>
                   </div>
                 ))}
+              </div>
+              <div className="mt-3 pt-3 border-t border-slate-100 flex items-center gap-2">
+                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${streams.length > 0 ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>{streams.length > 0 ? 'Ready' : 'Draft'}</span>
+                <span className="text-[10px] text-slate-400">{streams.length > 0 ? `${streams.length} live stream${streams.length !== 1 ? 's' : ''} configured` : 'Add a preset to make this event Ready'}</span>
               </div>
             </div>
           </div>
@@ -917,34 +1294,45 @@ function CreateEventPage({ onBack, onSave, tenantId, rosterCount }: {
 
 // ─── EDIT EVENT PAGE ─────────────────────────────────────────────────────────
 
-function EditEventPage({ event, onBack, onSave, tenantId, rosterCount }: {
-  event: LiveEvent; onBack: () => void; onSave: (e: LiveEvent) => void; tenantId: string; rosterCount: number;
+function EditEventPage({ event, onBack, onSave, tenantId }: {
+  event: LiveEvent; onBack: () => void; onSave: (e: LiveEvent) => void; tenantId: string;
 }) {
   const [form, setForm] = useState({
     title: event.title || '', description: event.description || '',
     includeMatchDetails: event.includeMatchDetails || false,
     homeTeam: event.homeTeam || '', awayTeam: event.awayTeam || '',
-    competition: event.competition || '', venue: event.venue || '',
+    competition: event.competition || '', round: event.round || '', venue: event.venue || '',
     event_start_time: event.event_start_time || '', kickoff_time: event.kickoff_time || '', event_end_time: event.event_end_time || '',
+    opta_id: event.opta_id || '', external_id: event.external_id || '',
     image_16x9: event.image_16x9,
   });
   const [streams, setStreams] = useState<StreamRow[]>(event.streams || []);
-  const [vipEnabled, setVipEnabled] = useState<boolean>(event.vip_delivery?.enabled ?? false);
+  const [sourceMatch, setSourceMatch] = useState<SourceMatch | null>(event.source_match || null);
+  const [pendingResync, setPendingResync] = useState<{ fixture: CatalogFixture; deltas: { field: string; from: string; to: string; apply: () => void }[] } | null>(null);
+  const [resyncToast, setResyncToast] = useState<string | null>(null);
 
-  const addStream    = () => setStreams(p => [...p, createStreamRow({ title: `Stream ${p.length + 1}` })]);
+  const applyPreset  = (preset: BroadcastPreset) => setStreams(streamsFromPreset(preset));
   const removeStream = (id: string) => setStreams(p => p.filter(s => s.id !== id));
   const updateStream = (id: string, row: StreamRow) => setStreams(p => p.map(s => s.id === id ? row : s));
   const userTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const hasVideoStream = streams.some(s => s.output.type === 'video');
+  const vipOn = hasVideoStream && streams.some(s => s.vip);
 
   const handleSave = () => {
-    const nextVip: VipDelivery = vipEnabled
+    const nextVip: VipDelivery = vipOn
       ? { enabled: true, hosted_page_url: event.vip_delivery?.hosted_page_url || `https://vip.yinzcam.com/${tenantId}/${event.id}`, distribution_status: event.vip_delivery?.distribution_status || 'pending', last_email_sent_at: event.vip_delivery?.last_email_sent_at }
       : { enabled: false };
-    onSave({ ...event, ...form, streams, vip_delivery: nextVip });
+    const nextStatus: EventStatus = (event.status === 'live' || event.status === 'ended') ? event.status : (streams.length > 0 ? 'upcoming' : 'draft');
+    onSave({ ...event, ...form, status: nextStatus, isDraft: streams.length === 0, streams, source_match: sourceMatch || undefined, vip_delivery: nextVip });
   };
 
   return (
     <div className="min-h-screen bg-slate-50">
+      {resyncToast && (
+        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-lg shadow-lg text-sm font-medium flex items-center gap-2">
+          <Check size={14} /> {resyncToast}
+        </div>
+      )}
       <div className="bg-white border-b border-slate-200 px-6 py-4 sticky top-0 z-30">
         <div className="max-w-6xl mx-auto flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -1012,28 +1400,94 @@ function EditEventPage({ event, onBack, onSave, tenantId, rosterCount }: {
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div><label className="block text-sm font-medium text-slate-700 mb-1.5">Competition</label><input type="text" value={form.competition} onChange={e => setForm({ ...form, competition: e.target.value })} className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm" /></div>
+                <div><label className="block text-sm font-medium text-slate-700 mb-1.5">Round</label><input type="text" value={form.round} onChange={e => setForm({ ...form, round: e.target.value })} placeholder="e.g. Quarter-final" className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm" /></div>
                 <div><label className="block text-sm font-medium text-slate-700 mb-1.5">Venue</label><input type="text" value={form.venue} onChange={e => setForm({ ...form, venue: e.target.value })} className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm" /></div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Data ID</label>
+                  <div className="w-full px-3.5 py-2.5 border border-slate-200 rounded-lg bg-slate-50 text-sm font-mono flex items-center min-h-[42px]">
+                    {form.opta_id ? <span className="text-slate-700">{form.opta_id}</span> : <span className="text-slate-400">Not linked</span>}
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1">From Data Integration (Opta or similar)</p>
+                </div>
               </div>
             </div>
           )}
 
+          <div className="pt-4 border-t border-slate-100">
+            <h3 className="text-sm font-semibold text-slate-800 mb-3">Data Integration</h3>
+            {pendingResync && (
+              <div className="bg-violet-50 border border-violet-200 rounded-lg p-4 mb-4">
+                <div className="flex items-start gap-2.5 mb-3">
+                  <RefreshCw size={16} className="text-violet-600 flex-shrink-0 mt-0.5" />
+                  <div className="flex-1">
+                    <p className="text-sm font-semibold text-violet-900">
+                      {pendingResync.deltas.length === 0 ? `No changes since last sync (${pendingResync.fixture.opta_id})` : `${pendingResync.deltas.length} change${pendingResync.deltas.length === 1 ? '' : 's'} found in Opta`}
+                    </p>
+                    <p className="text-[11px] text-violet-700 mt-0.5">{pendingResync.fixture.home_team} v {pendingResync.fixture.away_team}</p>
+                  </div>
+                  <button onClick={() => setPendingResync(null)} className="p-1 text-violet-500 hover:text-violet-700"><X size={14} /></button>
+                </div>
+                {pendingResync.deltas.length > 0 && (
+                  <>
+                    <div className="space-y-1.5 mb-3">
+                      {pendingResync.deltas.map((d, i) => (
+                        <div key={i} className="flex items-center justify-between gap-2 bg-white border border-violet-200 rounded-md px-3 py-1.5 text-xs">
+                          <div className="flex-1 min-w-0">
+                            <span className="text-[10px] font-semibold text-violet-600 uppercase tracking-wider">{d.field}</span>
+                            <p className="text-slate-700 truncate"><span className="line-through text-slate-400">{d.from}</span> → <strong>{d.to}</strong></p>
+                          </div>
+                          <button onClick={() => { d.apply(); setPendingResync(prev => prev ? { ...prev, deltas: prev.deltas.filter((_, j) => j !== i) } : null); }}
+                            className="px-2 py-1 text-[10px] font-medium text-violet-700 bg-violet-50 border border-violet-300 rounded hover:bg-violet-100 flex-shrink-0">Apply</button>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <button onClick={() => { pendingResync.deltas.forEach(d => d.apply()); setSourceMatch(prev => prev ? { ...prev, pulled_at: new Date().toISOString() } : prev); setPendingResync(null); }}
+                        className="px-3 py-1.5 text-xs font-medium bg-violet-600 text-white rounded hover:bg-violet-700">Apply all</button>
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+            <div className="grid grid-cols-2 gap-4">
+              <OptaLookupField optaId={form.opta_id} onOptaIdChange={id => setForm({ ...form, opta_id: id })}
+                onMatchApplied={f => {
+                  setForm({ ...form, opta_id: f.opta_id, homeTeam: f.home_team, awayTeam: f.away_team, competition: f.competition, round: f.round, venue: f.venue, kickoff_time: f.kickoff_iso, includeMatchDetails: true });
+                  setSourceMatch({ provider: initialStatsFeedSettings.provider, source_id: f.opta_id, pulled_at: new Date().toISOString(), raw_snapshot: { home_team: f.home_team, away_team: f.away_team, competition: f.competition, venue: f.venue, kickoff_iso: f.kickoff_iso } });
+                }}
+                enableResync={!!sourceMatch && sourceMatch.provider !== 'manual'}
+                lastPulledAt={sourceMatch?.pulled_at}
+                onResyncCompared={f => {
+                  const deltas: { field: string; from: string; to: string; apply: () => void }[] = [];
+                  if (f.home_team  !== form.homeTeam)    deltas.push({ field: 'Home team',   from: form.homeTeam || '—',    to: f.home_team,   apply: () => setForm(p => ({ ...p, homeTeam: f.home_team })) });
+                  if (f.away_team  !== form.awayTeam)    deltas.push({ field: 'Away team',   from: form.awayTeam || '—',    to: f.away_team,   apply: () => setForm(p => ({ ...p, awayTeam: f.away_team })) });
+                  if (f.competition !== form.competition) deltas.push({ field: 'Competition', from: form.competition || '—', to: f.competition, apply: () => setForm(p => ({ ...p, competition: f.competition })) });
+                  if (f.round       !== form.round)       deltas.push({ field: 'Round',       from: form.round || '—',       to: f.round,       apply: () => setForm(p => ({ ...p, round: f.round })) });
+                  if (f.venue       !== form.venue)       deltas.push({ field: 'Venue',       from: form.venue || '—',       to: f.venue,       apply: () => setForm(p => ({ ...p, venue: f.venue })) });
+                  if (deltas.length === 0) { setResyncToast('No changes since last sync'); setSourceMatch(prev => prev ? { ...prev, pulled_at: new Date().toISOString() } : prev); setTimeout(() => setResyncToast(null), 2500); }
+                  setPendingResync({ fixture: f, deltas });
+                }} />
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">External Reference</label>
+                <input type="text" value={form.external_id} onChange={e => setForm({ ...form, external_id: e.target.value })}
+                  placeholder="Optional third-party ref" className="w-full px-3.5 py-2.5 border border-slate-300 rounded-lg focus:border-emerald-500 focus:ring-1 focus:ring-emerald-200 focus:outline-none text-sm font-mono" />
+              </div>
+            </div>
+          </div>
         </div>
 
         <div className="bg-white rounded-xl border border-slate-200 p-6">
           <div className="flex items-center justify-between mb-1">
             <h2 className="text-base font-bold text-slate-900">Streams</h2>
-            <button onClick={addStream} className="px-3.5 py-2 bg-slate-900 text-white rounded-lg hover:bg-slate-800 text-sm font-medium flex items-center gap-1.5"><Plus size={14} /> Add Stream</button>
+            {streams.length > 0 && <button onClick={() => setStreams([])} className="text-xs font-medium text-slate-500 hover:text-slate-800 flex items-center gap-1"><RefreshCw size={12} /> Change preset</button>}
           </div>
-          <p className="text-xs text-slate-500 mb-5">Each stream pairs a broadcast input with an output template.</p>
+          <p className="text-xs text-slate-500 mb-5">Pick a Broadcast Preset — its outputs become Live Streams ready for Rights &amp; Restrictions.</p>
           {streams.length === 0 ? (
-            <button onClick={addStream} className="w-full py-10 border-2 border-dashed border-slate-300 rounded-xl hover:border-emerald-500 hover:bg-emerald-50 transition-all flex flex-col items-center gap-2 cursor-pointer">
-              <Plus size={24} className="text-slate-400" /><span className="text-sm font-medium text-slate-600">Add your first stream</span>
-            </button>
+            <PresetPicker onConfirm={applyPreset} />
           ) : (
             <div className="space-y-3">
               {streams.map((row, i) => (
-                <StreamRowCard key={row.id} row={row} index={i} onUpdate={r => updateStream(row.id, r)} onRemove={() => removeStream(row.id)}
-                  allStreams={streams} vipEnabled={vipEnabled} onVipEnabledChange={setVipEnabled} vipRosterCount={rosterCount} />
+                <StreamRowCard key={row.id} row={row} index={i} onUpdate={r => updateStream(row.id, r)} onRemove={() => removeStream(row.id)} />
               ))}
             </div>
           )}
@@ -1090,6 +1544,7 @@ function EventDetailsModal({ event, onClose, onEdit }: {
                     <div><label className="block text-sm font-medium text-slate-900 mb-1">Away Team</label><p className="text-slate-700">{event.awayTeam}</p></div>
                   </div>
                   {event.competition && <div><label className="block text-sm font-medium text-slate-900 mb-1">Competition</label><p className="text-slate-700">{event.competition}</p></div>}
+                  {event.round && <div><label className="block text-sm font-medium text-slate-900 mb-1">Round</label><p className="text-slate-700">{event.round}</p></div>}
                   {event.venue && <div><label className="block text-sm font-medium text-slate-900 mb-1">Venue</label><p className="text-slate-700 flex items-center gap-2"><MapPin size={16} /> {event.venue}</p></div>}
                 </>
               )}
@@ -1097,6 +1552,19 @@ function EventDetailsModal({ event, onClose, onEdit }: {
                 <div><label className="block text-sm font-medium text-slate-900 mb-1">Event Start</label><p className="text-slate-700 text-sm">{formatDateTime(event.event_start_time)}</p></div>
                 <div><label className="block text-sm font-medium text-slate-900 mb-1">{event.includeMatchDetails ? 'Kick-off' : 'Main Start'}</label><p className="text-slate-700 text-sm">{formatDateTime(event.kickoff_time)}</p></div>
                 {event.event_end_time && <div><label className="block text-sm font-medium text-slate-900 mb-1">Event End</label><p className="text-slate-700 text-sm">{formatDateTime(event.event_end_time)}</p></div>}
+              </div>
+              <div className="pt-4 border-t border-slate-100">
+                <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">Source</label>
+                {event.source_match ? (
+                  <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 flex items-start gap-2.5">
+                    <RefreshCw size={14} className="text-slate-500 flex-shrink-0 mt-0.5" />
+                    <div className="flex-1 text-xs">
+                      <p className="font-medium text-slate-800">Pulled from {event.source_match.provider.toUpperCase()}</p>
+                      <p className="text-slate-500 mt-0.5">{new Date(event.source_match.pulled_at).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' })}{event.source_match.source_id && <> · <code className="font-mono text-slate-600">{event.source_match.source_id}</code></>}</p>
+                    </div>
+                  </div>
+                ) : <p className="text-xs text-slate-500">Manual entry</p>}
+                {event.external_id && <p className="text-[11px] text-slate-500 mt-2">External ref: <code className="font-mono text-slate-700">{event.external_id}</code></p>}
               </div>
               {event.vip_delivery?.enabled && (
                 <div className="pt-4 border-t border-slate-100">
@@ -1127,29 +1595,32 @@ function EventDetailsModal({ event, onClose, onEdit }: {
               {event.streams.length === 0 ? (
                 <div className="text-center py-12"><Video size={48} className="mx-auto text-slate-300 mb-4" /><h3 className="text-lg font-semibold text-slate-900 mb-2">No streams configured</h3></div>
               ) : event.streams.map(stream => {
-                const broadcast = CLIENT_BROADCASTS.find(b => b.broadcast_id === stream.broadcast_id);
-                const template  = STREAM_TEMPLATES.find(t => t.template_id === stream.stream_template_id);
-                const si        = STREAM_ICONS.find(ic => ic.id === stream.icon);
+                const si        = STREAM_ICONS.find(ic => ic.id === stream.output.type);
                 const StreamIconComp = si ? si.Icon : Video;
                 const hasRights = !!stream.rights.geo_profile || stream.rights.geo_countries.length > 0 || stream.rights.subscription_plans.length > 0 || stream.rights.segment_ids.length > 0;
                 return (
                   <div key={stream.id} className="border border-slate-200 rounded-xl p-5">
                     <div className="flex items-center gap-3 mb-4">
                       <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center"><StreamIconComp size={16} className="text-emerald-700" /></div>
-                      <div className="flex-1"><h4 className="font-semibold text-slate-900">{stream.title}</h4>
+                      <div className="flex-1"><h4 className="font-semibold text-slate-900">{stream.output.name}</h4>
                         <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[10px] text-slate-400">{stream.preset_name}</span>
                           {stream.live2vod && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 flex items-center gap-1"><Archive size={9} /> Live2VOD</span>}
+                          {stream.captions && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 flex items-center gap-1"><Captions size={9} /> Captions</span>}
+                          {stream.vip && <span className="text-[10px] font-medium px-2 py-0.5 rounded-full bg-fuchsia-100 text-fuchsia-700 flex items-center gap-1"><Crown size={9} /> VIP</span>}
                         </div>
                       </div>
                     </div>
                     <div className="grid grid-cols-2 gap-4 mb-4">
                       <div className="bg-slate-50 rounded-lg p-3">
                         <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Broadcast Input</p>
-                        {broadcast ? <><p className="text-sm font-medium text-slate-900">{broadcast.broadcast_name}</p><span className={`text-[10px] font-medium px-2 py-0.5 rounded-full mt-1 inline-block ${INPUT_TYPE_COLORS[broadcast.input_type]}`}>{broadcast.protocol_label}</span></> : <p className="text-sm text-slate-400">Not assigned</p>}
+                        <p className="text-sm font-medium text-slate-900">{stream.input.protocol_label}</p>
+                        <code className="text-[10px] text-slate-600 font-mono break-all block mt-1">{stream.input.endpoint_url}</code>
                       </div>
                       <div className="bg-slate-50 rounded-lg p-3">
                         <p className="text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-1">Stream Output</p>
-                        {template ? <><p className="text-sm font-medium text-slate-900">{template.display_name}</p><p className="text-[10px] text-slate-500 mt-0.5">{template.description}</p></> : <p className="text-sm text-slate-400">Not assigned</p>}
+                        <p className="text-sm font-medium text-slate-900">{stream.output.name}</p>
+                        <p className="text-[10px] text-slate-500 mt-0.5">{stream.output.codec}{stream.output.resolution !== '—' ? ` · ${stream.output.resolution}` : ''}{stream.output.bitrate !== '—' ? ` · ${stream.output.bitrate}` : ''}</p>
                       </div>
                     </div>
                     {hasRights && (
@@ -1187,14 +1658,14 @@ function EventDetailsModal({ event, onClose, onEdit }: {
                         <button onClick={() => setPreviewStreamIndex(Math.max(0, previewStreamIndex - 1))} disabled={previewStreamIndex === 0} className="p-1.5 rounded-lg hover:bg-slate-200 disabled:opacity-30 transition-colors"><ChevronLeft size={18} className="text-slate-600" /></button>
                         <div className="flex-1 flex gap-2">
                           {event.streams.map((stream, idx) => {
-                            const si = STREAM_ICONS.find(ic => ic.id === stream.icon);
+                            const si = STREAM_ICONS.find(ic => ic.id === stream.output.type);
                             const StreamIcon = si ? si.Icon : Video;
                             const isActive = idx === previewStreamIndex;
                             return (
                               <button key={stream.id} onClick={() => setPreviewStreamIndex(idx)}
                                 className={`flex-1 flex items-center gap-2 px-3 py-2.5 rounded-lg border-2 transition-all text-left ${isActive ? 'border-emerald-500 bg-white shadow-sm' : 'border-transparent bg-white/60 hover:bg-white hover:border-slate-300'}`}>
                                 <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${isActive ? 'bg-emerald-100' : 'bg-slate-100'}`}><StreamIcon size={16} className={isActive ? 'text-emerald-700' : 'text-slate-400'} /></div>
-                                <div className="min-w-0"><p className={`text-sm font-medium truncate ${isActive ? 'text-emerald-700' : 'text-slate-600'}`}>{stream.title}</p></div>
+                                <div className="min-w-0"><p className={`text-sm font-medium truncate ${isActive ? 'text-emerald-700' : 'text-slate-600'}`}>{stream.output.name}</p></div>
                                 {isActive && <div className="ml-auto w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0" />}
                               </button>
                             );
@@ -1207,14 +1678,13 @@ function EventDetailsModal({ event, onClose, onEdit }: {
                   {(() => {
                     const activeStream = event.streams[previewStreamIndex] || event.streams[0];
                     if (!activeStream) return null;
-                    const template = STREAM_TEMPLATES.find(t => t.template_id === activeStream.stream_template_id);
-                    const isAudio  = template?.icon === 'radio' || activeStream.icon === 'radio';
+                    const isAudio  = activeStream.output.type === 'radio';
                     return (
                       <div className="rounded-xl overflow-hidden border border-slate-200 bg-black">
                         {isAudio ? (
                           <div className="bg-gradient-to-br from-slate-800 to-slate-900 px-8 py-12 flex flex-col items-center justify-center">
                             <div className="w-20 h-20 rounded-full bg-emerald-600/20 flex items-center justify-center mb-4 ring-4 ring-emerald-600/10"><Radio size={36} className="text-emerald-400" /></div>
-                            <p className="text-white font-semibold text-lg">{activeStream.title}</p>
+                            <p className="text-white font-semibold text-lg">{activeStream.output.name}</p>
                             <div className="flex items-end gap-1 mt-6 h-10">
                               {Array.from({ length: 20 }).map((_, i) => (
                                 <div key={i} className="w-1.5 bg-emerald-500 rounded-full animate-pulse" style={{ height: `${12 + Math.random() * 28}px`, animationDelay: `${i * 0.08}s` }} />
@@ -1226,7 +1696,7 @@ function EventDetailsModal({ event, onClose, onEdit }: {
                             <div className="absolute inset-0 bg-gradient-to-b from-slate-800/40 via-transparent to-slate-900/60 flex flex-col items-center justify-center">
                               <div className="text-center">
                                 <div className="w-16 h-16 rounded-full bg-white/10 backdrop-blur-sm flex items-center justify-center mb-3 mx-auto border border-white/20"><Play size={28} className="text-white ml-1" /></div>
-                                <p className="text-white font-semibold text-lg drop-shadow-lg">{activeStream.title}</p>
+                                <p className="text-white font-semibold text-lg drop-shadow-lg">{activeStream.output.name}</p>
                               </div>
                             </div>
                             <div className="absolute top-4 left-4 flex items-center gap-2">
@@ -1514,6 +1984,7 @@ export default function EventManager() {
   const [selectedEvent, setSelectedEvent]     = useState<LiveEvent | null>(null);
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [channelActionConfirm, setChannelActionConfirm] = useState<{ eventId: string; action: 'start' | 'stop' } | null>(null);
+  const [showPrevious, setShowPrevious] = useState(false);
 
   const handleDeleteEvent = (eventId: string) => {
     setActiveEvents(activeEvents.filter(e => e.id !== eventId));
@@ -1535,20 +2006,38 @@ export default function EventManager() {
     setTimeout(() => setActiveEvents(prev => prev.map(e => e.id === eventId ? { ...e, channelState: 'idle' } : e)), 3000);
   };
 
-  if (view === 'create') return <CreateEventPage tenantId={TENANT_ID} rosterCount={rosterActiveCount} onBack={() => setView('listing')} onSave={e => { setActiveEvents([e, ...activeEvents]); setView('listing'); }} />;
-  if (view === 'edit' && editingEvent) return <EditEventPage event={editingEvent} tenantId={TENANT_ID} rosterCount={rosterActiveCount} onBack={() => { setEditingEvent(null); setView('listing'); }} onSave={updated => { setActiveEvents(activeEvents.map(e => e.id === updated.id ? updated : e)); setEditingEvent(null); setView('listing'); }} />;
+  const toggleVisibility = (eventId: string) => {
+    setActiveEvents(prev => prev.map(e => e.id === eventId ? { ...e, visibility: e.visibility === 'visible' ? 'hidden' : 'visible' } : e));
+  };
+
+  if (view === 'create') return <CreateEventPage tenantId={TENANT_ID} onBack={() => setView('listing')} onSave={e => { setActiveEvents([e, ...activeEvents]); setView('listing'); }} />;
+  if (view === 'edit' && editingEvent) return <EditEventPage event={editingEvent} tenantId={TENANT_ID} onBack={() => { setEditingEvent(null); setView('listing'); }} onSave={updated => { setActiveEvents(activeEvents.map(e => e.id === updated.id ? updated : e)); setEditingEvent(null); setView('listing'); }} />;
   if (view === 'vip-members') return <VipMembersPage roster={vipRoster} setRoster={setVipRoster} events={activeEvents} tenantId={TENANT_ID} onBack={() => setView('listing')} />;
 
-  const STREAM_TYPE_LABELS = STREAM_TEMPLATES.map(t => ({ template_id: t.template_id, display: t.display_name, icon: t.icon }));
+  const STREAM_TYPE_LABELS: { type: 'video' | 'radio'; display: string; icon: 'video' | 'radio' }[] = [
+    { type: 'video', display: 'Video', icon: 'video' },
+    { type: 'radio', display: 'Radio', icon: 'radio' },
+  ];
 
   const filteredEvents = activeEvents.filter(event => {
     const matchesSearch  = event.title.toLowerCase().includes(searchQuery.toLowerCase()) || (event.description || '').toLowerCase().includes(searchQuery.toLowerCase()) || (event.homeTeam && event.homeTeam.toLowerCase().includes(searchQuery.toLowerCase())) || (event.awayTeam && event.awayTeam.toLowerCase().includes(searchQuery.toLowerCase()));
     const matchesStatus  = statusFilter === 'all' || event.status === statusFilter;
-    const matchesStreams  = streamLabelFilters.length === 0 || streamLabelFilters.every(templateId => (event.streams || []).some(s => s.stream_template_id === templateId));
+    const matchesStreams  = streamLabelFilters.length === 0 || streamLabelFilters.every(t => (event.streams || []).some(s => s.output.type === t));
     return matchesSearch && matchesStatus && matchesStreams;
   });
 
   const activeFilteredEvents = filteredEvents;
+
+  // Sort to "today's events or the first upcoming" at the top; past/ended events sit behind the Previous Events bar.
+  const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+  const eventMs = (e: LiveEvent) => new Date(e.kickoff_time).getTime();
+  const isPrevious = (e: LiveEvent) => e.status === 'ended' || eventMs(e) < todayStart.getTime();
+  const previousEvents = activeFilteredEvents.filter(isPrevious).sort((a, b) => eventMs(b) - eventMs(a)); // most-recent first
+  const upcomingEvents = activeFilteredEvents.filter(e => !isPrevious(e)).sort((a, b) => eventMs(a) - eventMs(b)); // ascending
+  const onEndedFilter = statusFilter === 'ended';
+  const revealPrevious = showPrevious || onEndedFilter;
+  const shownPrevious = previousEvents.slice(0, onEndedFilter ? previousEvents.length : 5); // last 5 (all when Ended-filtered)
+  const orderedEvents = [...(revealPrevious ? shownPrevious : []), ...upcomingEvents];
 
   return (
     <div className="min-h-screen bg-slate-50">
@@ -1600,11 +2089,11 @@ export default function EventManager() {
                     <label className="block text-sm font-medium text-slate-900 mb-2">Stream Type</label>
                     <div className="flex gap-2">
                       {STREAM_TYPE_LABELS.map(label => {
-                        const isActive  = streamLabelFilters.includes(label.template_id);
+                        const isActive  = streamLabelFilters.includes(label.type);
                         const IconComp  = label.icon === 'video' ? Video : Radio;
                         return (
-                          <button key={label.template_id}
-                            onClick={() => isActive ? setStreamLabelFilters(streamLabelFilters.filter(f => f !== label.template_id)) : setStreamLabelFilters([...streamLabelFilters, label.template_id])}
+                          <button key={label.type}
+                            onClick={() => isActive ? setStreamLabelFilters(streamLabelFilters.filter(f => f !== label.type)) : setStreamLabelFilters([...streamLabelFilters, label.type])}
                             className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-sm font-medium border-2 transition-all ${isActive ? 'bg-emerald-600 text-white border-emerald-600 shadow-sm' : 'bg-white text-slate-700 border-slate-200 hover:border-emerald-400 hover:bg-emerald-50'}`}>
                             <IconComp size={16} />{label.display}{isActive && <Check size={14} />}
                           </button>
@@ -1619,7 +2108,7 @@ export default function EventManager() {
 
           <div className="p-6">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-sm text-slate-500">Showing {activeFilteredEvents.length} of {activeEvents.length} events</p>
+              <p className="text-sm text-slate-500">Showing {upcomingEvents.length} upcoming · {previousEvents.length} previous of {activeEvents.length} events</p>
               <div className="flex items-center gap-2">
                 <span className="flex items-center gap-2 text-sm"><span className="w-2 h-2 bg-red-600 rounded-full animate-pulse" /><span className="font-medium text-slate-900">{activeEvents.filter(e => e.status === 'live').length} Live</span></span>
                 <span className="text-slate-300">|</span>
@@ -1627,11 +2116,28 @@ export default function EventManager() {
               </div>
             </div>
 
-            {activeFilteredEvents.length === 0 ? (
+            {upcomingEvents.length === 0 && previousEvents.length === 0 ? (
               <div className="text-center py-12"><Search size={48} className="mx-auto text-slate-300 mb-4" /><h3 className="text-lg font-semibold text-slate-900 mb-2">No events found</h3><p className="text-slate-500">Try adjusting your search or filters</p></div>
             ) : (
               <div className="space-y-4">
-                {activeFilteredEvents.map(event => {
+                {previousEvents.length > 0 && (
+                  <div>
+                    <button onClick={() => setShowPrevious(s => !s)}
+                      className="w-full flex items-center justify-between px-4 py-3 bg-white rounded-xl border border-slate-200 hover:bg-slate-50 transition-colors text-left">
+                      <div className="flex items-center gap-2">
+                        <Archive size={16} className="text-violet-600" />
+                        <span className="text-sm font-semibold text-slate-800">Previous Events</span>
+                        <span className="px-2 py-0.5 bg-violet-100 text-violet-700 text-xs font-medium rounded-full">{previousEvents.length}</span>
+                        <span className="text-xs text-slate-400">{revealPrevious ? 'showing recent' : 'click to load the last 5'}</span>
+                      </div>
+                      <ChevronDown size={16} className={`text-slate-400 transition-transform duration-150 ${revealPrevious ? 'rotate-180' : ''}`} />
+                    </button>
+                    {revealPrevious && !onEndedFilter && previousEvents.length > 5 && (
+                      <p className="text-[11px] text-slate-400 mt-1.5 px-1">Showing the 5 most recent — filter Status → Ended to see all {previousEvents.length}.</p>
+                    )}
+                  </div>
+                )}
+                {orderedEvents.map(event => {
                   const missingFields  = getMissingFields(event);
 
                   return (
@@ -1659,7 +2165,14 @@ export default function EventManager() {
                               </div>
                               <p className="text-sm text-slate-500 line-clamp-1 mb-2">{event.description || 'No description provided'}</p>
                             </div>
-                            <span className={`px-3 py-1 rounded-full text-xs font-medium border flex-shrink-0 ${getStatusColor(event.status)}`}>{event.status.toUpperCase()}</span>
+                            <div className="flex items-center gap-1.5 flex-shrink-0">
+                              <span className={`px-3 py-1 rounded-full text-xs font-medium border ${getStatusColor(event.status)}`}>{event.status.toUpperCase()}</span>
+                              <span className={`px-2.5 py-1 rounded-full text-xs font-medium border ${getReadiness(event) === 'Ready' ? 'bg-emerald-100 text-emerald-800 border-emerald-200' : 'bg-slate-100 text-slate-600 border-slate-200'}`}>{getReadiness(event)}</span>
+                              <button onClick={() => toggleVisibility(event.id)} title={event.visibility === 'visible' ? 'Visible — click to hide' : 'Hidden — click to show'}
+                                className={`px-2.5 py-1 rounded-full text-xs font-medium border flex items-center gap-1 transition-colors ${event.visibility === 'visible' ? 'bg-sky-50 text-sky-700 border-sky-200 hover:bg-sky-100' : 'bg-slate-100 text-slate-500 border-slate-200 hover:bg-slate-200'}`}>
+                                {event.visibility === 'visible' ? <><Eye size={11} /> Visible</> : <><EyeOff size={11} /> Hidden</>}
+                              </button>
+                            </div>
                           </div>
 
                           <div className="flex flex-wrap items-center gap-4 text-sm text-slate-500 mb-3">
